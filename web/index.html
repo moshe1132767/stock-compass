@@ -2,181 +2,265 @@
 <html lang="he" dir="rtl">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<meta name="theme-color" content="#0e1420">
-<title>מצפן המניות</title>
-<link rel="manifest" href='data:application/manifest+json,{"name":"מצפן המניות","short_name":"מצפן","start_url":".","display":"standalone","background_color":"%230e1420","theme_color":"%230e1420","icons":[]}'>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0B0E11">
+<title>trade</title>
+<link rel="manifest" href='data:application/manifest+json,{"name":"trade","short_name":"trade","display":"standalone","background_color":"%230B0E11","theme_color":"%230B0E11","icons":[]}'>
 <style>
-  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
   :root{
-    --bg:#0e1420; --card:#171f2e; --card2:#1e2839; --line:#2a3547;
-    --txt:#e8edf5; --dim:#93a1b5; --dim2:#63718a;
-    --buy:#2ecc71; --sell:#ff5b6a; --hold:#f1c40f; --accent:#3d9bff;
+    /* surfaces */
+    --bg:#0B0E11; --surface:#14171C; --surface2:#1C2027; --surface3:#262B34;
+    --border:rgba(255,255,255,.07); --border2:#2A2E39;
+    /* text */
+    --txt:#E6E8EB; --muted:#8B929E; --dim:#5B616E;
+    /* semantic */
+    --brand:#00D37F; --up:#00D37F; --up-wash:rgba(0,211,127,.13);
+    --down:#F6465D; --down-wash:rgba(246,70,93,.13);
+    --neu:#8B929E; --neu-wash:rgba(255,255,255,.06);
+    /* score bands */
+    --sbuy:#00D37F; --buy:#34D399; --hold:#8B929E; --sell:#FB7185; --ssell:#F6465D;
+    --r-card:16px; --r-el:12px; --r-pill:8px;
   }
+  .num{font-variant-numeric:tabular-nums lining-nums;font-feature-settings:"tnum" 1,"lnum" 1;}
   html,body{margin:0;padding:0;background:var(--bg);color:var(--txt);
-    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
-    -webkit-font-smoothing:antialiased;}
-  body{max-width:640px;margin:0 auto;min-height:100vh;padding-bottom:40px;}
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,"Helvetica Neue",system-ui,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
+  body{max-width:620px;margin:0 auto;min-height:100vh;
+    padding-bottom:calc(40px + env(safe-area-inset-bottom));}
   .hidden{display:none !important;}
+  ::selection{background:rgba(0,211,127,.25);}
 
-  header{position:sticky;top:0;z-index:20;background:rgba(14,20,32,.92);
-    backdrop-filter:blur(10px);border-bottom:1px solid var(--line);
-    padding:14px 16px;display:flex;align-items:center;justify-content:space-between;}
-  .brand{display:flex;align-items:center;gap:9px;font-weight:800;font-size:19px;letter-spacing:-.3px;}
-  .brand .logo{width:26px;height:26px;}
-  .icon-btn{background:var(--card2);border:1px solid var(--line);color:var(--txt);
-    width:40px;height:40px;border-radius:11px;font-size:19px;display:grid;place-items:center;cursor:pointer;}
-  .icon-btn:active{transform:scale(.93);}
+  /* ---------- header ---------- */
+  header{position:sticky;top:0;z-index:30;background:rgba(11,14,17,.86);
+    backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+    border-bottom:1px solid var(--border);
+    padding:calc(13px + env(safe-area-inset-top)) 16px 13px;
+    display:flex;align-items:center;justify-content:space-between;}
+  .brand{display:flex;align-items:center;gap:10px;}
+  .mark{width:30px;height:30px;border-radius:9px;flex:none;
+    background:linear-gradient(150deg,#0E1B2E,#0A0F1A);display:grid;place-items:center;
+    border:1px solid var(--border);}
+  .wordmark{font-weight:800;font-size:21px;letter-spacing:-.5px;}
+  .wordmark .t{color:var(--brand);}
+  .icon-btn{background:var(--surface2);border:1px solid var(--border);color:var(--txt);
+    width:42px;height:42px;border-radius:12px;font-size:18px;display:grid;place-items:center;
+    cursor:pointer;transition:transform .08s,background .15s;}
+  .icon-btn:active{transform:scale(.92);background:var(--surface3);}
+  .spin{animation:spin .7s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
 
-  .addbar{display:flex;gap:8px;padding:14px 16px 6px;}
-  .addbar input{flex:1;background:var(--card);border:1px solid var(--line);color:var(--txt);
-    border-radius:12px;padding:13px 15px;font-size:16px;outline:none;}
-  .addbar input:focus{border-color:var(--accent);}
-  .addbar button{background:var(--accent);border:none;color:#fff;font-weight:700;
-    border-radius:12px;padding:0 18px;font-size:15px;cursor:pointer;}
-  .addbar button:active{transform:scale(.95);}
-  .hint{color:var(--dim2);font-size:12.5px;padding:2px 18px 10px;}
+  /* ---------- add bar ---------- */
+  .addbar{display:flex;gap:9px;padding:16px 16px 8px;}
+  .addbar input{flex:1;background:var(--surface);border:1px solid var(--border2);color:var(--txt);
+    border-radius:var(--r-el);padding:14px 15px;font-size:16px;outline:none;transition:border-color .15s;}
+  .addbar input::placeholder{color:var(--dim);}
+  .addbar input:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(0,211,127,.12);}
+  .addbar button{background:var(--brand);border:none;color:#04150D;font-weight:800;
+    border-radius:var(--r-el);padding:0 20px;font-size:15px;cursor:pointer;letter-spacing:-.2px;
+    transition:transform .08s,filter .15s;min-height:48px;}
+  .addbar button:active{transform:scale(.95);filter:brightness(1.08);}
+  .hint{color:var(--dim);font-size:12.5px;padding:2px 18px 8px;line-height:1.5;}
 
-  .list{padding:6px 12px;}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;
-    padding:14px 15px;margin:9px 2px;cursor:pointer;position:relative;overflow:hidden;transition:transform .08s;}
-  .card:active{transform:scale(.985);}
-  .card .strip{position:absolute;top:0;bottom:0;right:0;width:5px;}
-  .card-top{display:flex;align-items:center;justify-content:space-between;gap:10px;}
-  .sym{font-weight:800;font-size:20px;letter-spacing:.3px;}
-  .cname{color:var(--dim);font-size:12.5px;margin-top:1px;max-width:150px;
+  /* ---------- list / cards ---------- */
+  .list{padding:6px 14px;}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);
+    padding:15px 16px;margin:10px 0;cursor:pointer;position:relative;overflow:hidden;
+    transition:transform .09s,border-color .15s;user-select:none;-webkit-touch-callout:none;}
+  .card:active{transform:scale(.988);border-color:var(--border2);}
+  .card .strip{position:absolute;top:0;bottom:0;inset-inline-start:0;width:4px;}
+  .card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
+  .sym{font-weight:800;font-size:19px;letter-spacing:.2px;}
+  .cname{color:var(--muted);font-size:12.5px;margin-top:2px;max-width:160px;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .price{text-align:left;}
+  .price{text-align:start;}
   .price .p{font-weight:700;font-size:17px;}
-  .price .ch{font-size:12.5px;margin-top:1px;}
-  .up{color:var(--buy);} .down{color:var(--sell);}
+  .price .ch{font-size:12.5px;margin-top:2px;font-weight:600;}
+  .up{color:var(--up);} .down{color:var(--down);}
+  .ch{direction:ltr;unicode-bidi:isolate;}
 
-  .reco-row{display:flex;align-items:center;justify-content:space-between;margin-top:12px;gap:12px;}
-  .reco-badge{display:flex;align-items:center;gap:9px;}
-  .score-pill{min-width:52px;height:40px;border-radius:11px;display:grid;place-items:center;
-    font-weight:800;font-size:19px;color:#0e1420;}
-  .reco-txt{font-weight:700;font-size:15.5px;}
-  .reco-sub{color:var(--dim);font-size:11.5px;margin-top:1px;}
-  .dots{display:flex;gap:5px;flex-wrap:wrap;}
-  .dot{width:9px;height:9px;border-radius:50%;background:var(--dim2);}
-  .dot.buy{background:var(--buy);} .dot.sell{background:var(--sell);} .dot.neu{background:#55617a;}
+  .reco-row{display:flex;align-items:center;justify-content:space-between;margin-top:14px;gap:12px;}
+  .badge{display:flex;align-items:center;gap:11px;min-width:0;}
+  .score-pill{min-width:46px;height:44px;padding:0 10px;border-radius:12px;display:grid;place-items:center;
+    font-weight:800;font-size:20px;color:#04150D;line-height:1;}
+  .reco-txt{font-weight:800;font-size:15.5px;letter-spacing:-.2px;}
+  .reco-sub{color:var(--muted);font-size:11.5px;margin-top:2px;}
+  .counts{display:flex;gap:6px;flex:none;}
+  .cnt{display:flex;align-items:center;gap:4px;font-size:11.5px;font-weight:800;
+    padding:5px 8px;border-radius:7px;line-height:1;}
+  .cnt.b{background:var(--up-wash);color:var(--up);}
+  .cnt.n{background:var(--neu-wash);color:var(--muted);}
+  .cnt.s{background:var(--down-wash);color:var(--down);}
 
-  .loading-mini{color:var(--dim2);font-size:13px;padding:10px 4px 2px;}
-  .empty{text-align:center;color:var(--dim);padding:50px 30px;}
-  .empty .big{font-size:44px;margin-bottom:10px;}
-  .err{background:#2a1416;border:1px solid #c0392b;color:#ffb3ba;
-    border-radius:12px;padding:11px 14px;margin:10px 14px;font-size:13.5px;}
+  /* skeleton */
+  .sk{position:relative;overflow:hidden;background:var(--surface3);border-radius:7px;}
+  .sk::after{content:"";position:absolute;inset:0;transform:translateX(-100%);
+    background:linear-gradient(90deg,transparent,rgba(255,255,255,.06),transparent);
+    animation:sh 1.3s infinite;}
+  @keyframes sh{100%{transform:translateX(100%);}}
 
-  .detail{padding:0 0 30px;}
-  .back{display:flex;align-items:center;gap:7px;color:var(--accent);font-weight:600;
+  .empty{text-align:center;color:var(--muted);padding:46px 30px 20px;}
+  .empty .em{width:60px;height:60px;margin:0 auto 14px;border-radius:16px;
+    background:linear-gradient(150deg,#0E1B2E,#0A0F1A);display:grid;place-items:center;border:1px solid var(--border);}
+  .empty h3{color:var(--txt);font-size:17px;margin:0 0 6px;font-weight:700;}
+  .empty p{font-size:13.5px;line-height:1.6;margin:0 0 16px;}
+  .chips{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;}
+  .chip{background:var(--surface2);border:1px solid var(--border2);color:var(--txt);
+    padding:9px 15px;border-radius:20px;font-weight:700;font-size:14px;cursor:pointer;}
+  .chip:active{transform:scale(.94);}
+
+  .err{background:rgba(246,70,93,.1);border:1px solid rgba(246,70,93,.4);color:#FFB3BC;
+    border-radius:var(--r-el);padding:12px 14px;margin:8px 16px;font-size:13.5px;}
+  .loading-mini{color:var(--dim);font-size:13px;padding:8px 6px 2px;text-align:center;}
+
+  /* ---------- detail ---------- */
+  .back{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-weight:600;
     font-size:15px;padding:14px 16px;cursor:pointer;}
-  .d-head{padding:4px 18px 6px;}
-  .d-sym{font-size:30px;font-weight:800;letter-spacing:.5px;}
-  .d-name{color:var(--dim);font-size:14px;margin-top:2px;}
-  .d-price{display:flex;align-items:baseline;gap:12px;margin-top:10px;}
-  .d-price .p{font-size:28px;font-weight:800;}
-  .d-price .ch{font-size:16px;font-weight:600;}
+  .back:active{color:var(--txt);}
+  .d-head{padding:2px 20px 4px;}
+  .d-sym{font-size:30px;font-weight:800;letter-spacing:.4px;}
+  .d-name{color:var(--muted);font-size:14px;margin-top:2px;}
+  .d-price{display:flex;align-items:baseline;gap:12px;margin-top:12px;flex-wrap:wrap;}
+  .d-price .p{font-size:30px;font-weight:800;letter-spacing:-.5px;}
+  .d-price .ch{font-size:16px;font-weight:700;}
 
-  .gauge-wrap{display:flex;align-items:center;gap:18px;background:var(--card);
-    border:1px solid var(--line);border-radius:18px;margin:16px 14px;padding:18px;}
-  .gauge{position:relative;width:120px;height:120px;flex:none;}
-  .gauge .num{position:absolute;inset:0;display:grid;place-items:center;font-size:30px;font-weight:800;}
-  .gauge .num small{display:block;font-size:11px;color:var(--dim);font-weight:600;text-align:center;margin-top:-4px;}
-  .gsummary .rtitle{font-size:22px;font-weight:800;margin-bottom:6px;}
-  .gsummary .rmeta{color:var(--dim);font-size:13.5px;line-height:1.7;}
-  .agree{display:flex;gap:6px;margin-top:9px;}
-  .agree span{font-size:12px;padding:3px 9px;border-radius:20px;font-weight:700;}
-  .agree .b{background:rgba(46,204,113,.15);color:var(--buy);}
-  .agree .n{background:rgba(85,97,122,.22);color:var(--dim);}
-  .agree .s{background:rgba(255,91,106,.15);color:var(--sell);}
+  /* gauge */
+  .gauge-card{background:var(--surface);border:1px solid var(--border);border-radius:20px;
+    margin:18px 16px;padding:22px 18px 20px;}
+  .gauge{position:relative;width:230px;max-width:78%;margin:0 auto;}
+  .gauge svg{width:100%;display:block;overflow:visible;}
+  .gauge-center{position:absolute;left:0;right:0;bottom:4px;text-align:center;}
+  .gscore{font-size:46px;font-weight:800;line-height:1;letter-spacing:-1px;}
+  .gscore small{font-size:14px;color:var(--muted);font-weight:600;}
+  .glabel{font-size:21px;font-weight:800;margin-top:3px;letter-spacing:-.3px;}
+  .gsub{color:var(--muted);font-size:12.5px;text-align:center;margin-top:16px;}
+  .summary{display:flex;gap:9px;justify-content:center;margin-top:14px;}
+  .scnt{display:flex;align-items:center;gap:7px;padding:9px 14px;border-radius:11px;
+    font-weight:800;font-size:14px;line-height:1;}
+  .scnt small{font-weight:600;font-size:11.5px;opacity:.85;}
+  .scnt.b{background:var(--up-wash);color:var(--up);}
+  .scnt.n{background:var(--neu-wash);color:var(--muted);}
+  .scnt.s{background:var(--down-wash);color:var(--down);}
 
-  .sec-title{font-size:13px;color:var(--dim2);font-weight:700;padding:8px 20px 4px;letter-spacing:.3px;}
-  .ind{background:var(--card);border:1px solid var(--line);border-radius:14px;margin:8px 14px;padding:13px 15px;}
+  .sec-title{font-size:12px;color:var(--dim);font-weight:800;padding:16px 22px 2px;
+    letter-spacing:.6px;text-transform:uppercase;display:flex;justify-content:space-between;align-items:center;}
+  .sec-title .mini{font-weight:700;letter-spacing:0;text-transform:none;font-size:12px;}
+  .sec-title .mini b{color:var(--up);} .sec-title .mini s{color:var(--muted);text-decoration:none;} .sec-title .mini u{color:var(--down);text-decoration:none;}
+  .ind{background:var(--surface);border:1px solid var(--border);border-radius:14px;margin:8px 16px;padding:14px 15px;}
   .ind-top{display:flex;align-items:center;justify-content:space-between;gap:10px;}
-  .ind-name{font-weight:700;font-size:15px;display:flex;align-items:center;gap:8px;}
-  .ind-sig{font-size:12.5px;font-weight:800;padding:4px 10px;border-radius:8px;white-space:nowrap;}
-  .sig-buy{background:rgba(46,204,113,.16);color:var(--buy);}
-  .sig-sell{background:rgba(255,91,106,.16);color:var(--sell);}
-  .sig-neu{background:rgba(85,97,122,.22);color:var(--dim);}
-  .ind-detail{color:var(--txt);font-size:13.5px;margin-top:7px;}
-  .ind-expl{color:var(--dim2);font-size:12px;margin-top:5px;line-height:1.6;}
-  .wbar{height:5px;background:var(--line);border-radius:4px;margin-top:9px;overflow:hidden;position:relative;}
-  .wbar i{position:absolute;top:0;bottom:0;left:50%;width:1px;background:var(--dim2);}
-  .wbar b{position:absolute;top:0;bottom:0;border-radius:4px;}
-  .disclaimer{color:var(--dim2);font-size:11.5px;line-height:1.7;text-align:center;padding:20px 26px 6px;}
+  .ind-name{font-weight:700;font-size:15px;}
+  .ind-val{color:var(--muted);font-size:13px;margin-top:3px;}
+  .ind-sig{font-size:12.5px;font-weight:800;padding:6px 11px;border-radius:8px;white-space:nowrap;
+    display:flex;align-items:center;gap:5px;flex:none;}
+  .sig-buy{background:var(--up-wash);color:var(--up);}
+  .sig-sell{background:var(--down-wash);color:var(--down);}
+  .sig-neu{background:var(--neu-wash);color:var(--muted);}
+  .ind-expl{color:var(--dim);font-size:12px;margin-top:8px;line-height:1.6;}
+  .wbar{height:5px;background:var(--surface3);border-radius:4px;margin-top:10px;position:relative;overflow:hidden;}
+  .wbar i{position:absolute;top:0;bottom:0;inset-inline-start:50%;width:1px;background:var(--dim);}
+  .wbar b{position:absolute;top:0;bottom:0;border-radius:4px;transition:width .5s ease;}
+  .disclaimer{color:var(--dim);font-size:11.5px;line-height:1.7;text-align:center;padding:22px 26px 6px;}
 </style>
 </head>
 <body>
 
 <header>
   <div class="brand">
-    <svg class="logo" viewBox="0 0 24 24" fill="none" stroke="#3d9bff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.2"/><polygon points="15.5,8.5 10.8,10.8 8.5,15.5 13.2,13.2" fill="#3d9bff" stroke="none"/></svg>
-    מצפן המניות
+    <div class="mark">
+      <svg width="19" height="19" viewBox="0 0 100 100" aria-hidden="true">
+        <g fill="#00D37F"><rect x="40" y="15" width="20" height="70" rx="10"/><rect x="26" y="29" width="48" height="20" rx="10"/></g>
+      </svg>
+    </div>
+    <div class="wordmark"><span class="t">t</span>rade</div>
   </div>
-  <button class="icon-btn" id="refreshBtn" title="רענון">⟳</button>
+  <button class="icon-btn" id="refreshBtn" title="רענון" aria-label="רענון">
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+  </button>
 </header>
 
 <div id="listView">
   <div class="addbar">
-    <input id="symInput" placeholder="הוסף מניה (לדוגמה: AAPL, MSFT, NVDA)" autocomplete="off" autocapitalize="characters">
+    <input id="symInput" placeholder="חיפוש מניה — AAPL, MSFT, NVDA" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false">
     <button id="addBtn">הוסף</button>
   </div>
-  <div class="hint">הקלד סימול מניה אמריקאית (באנגלית) ולחץ הוסף. הנתונים מתעדכנים בכל פתיחה.</div>
+  <div class="hint">הקלד סימול מניה אמריקאית באנגלית. הנתונים מתעדכנים בכל פתיחה ורענון.</div>
   <div id="errBox"></div>
-  <div id="loadingMini" class="loading-mini hidden"></div>
   <div id="cards" class="list"></div>
+  <div id="loadingMini" class="loading-mini hidden"></div>
   <div id="emptyState" class="empty hidden">
-    <div class="big">📈</div>
-    <div>הרשימה ריקה.<br>הוסף מניה למעלה כדי לקבל את ההמלצה הראשונה.</div>
+    <div class="em">
+      <svg width="30" height="30" viewBox="0 0 100 100" aria-hidden="true"><g fill="#00D37F"><rect x="40" y="15" width="20" height="70" rx="10"/><rect x="26" y="29" width="48" height="20" rx="10"/></g></svg>
+    </div>
+    <h3>הרשימה שלך ריקה</h3>
+    <p>הוסף מניה כדי לקבל ניתוח טכני והמלצת קנייה/מכירה במבט אחד.</p>
+    <div class="chips">
+      <div class="chip" data-add="AAPL">AAPL</div>
+      <div class="chip" data-add="MSFT">MSFT</div>
+      <div class="chip" data-add="NVDA">NVDA</div>
+      <div class="chip" data-add="TSLA">TSLA</div>
+    </div>
   </div>
   <div class="disclaimer">
-    האפליקציה מספקת ניתוח טכני ממוחשב למטרות מידע והשכלה בלבד, ואינה מהווה ייעוץ השקעות או המלצה לפעולה.
-    כל החלטת השקעה היא באחריותך. השקעה בשוק ההון כרוכה בסיכון להפסד.
+    ניתוח טכני ממוחשב למטרות מידע והשכלה בלבד — אינו ייעוץ השקעות או המלצה לפעולה.
+    כל החלטת השקעה באחריותך. השקעה בשוק ההון כרוכה בסיכון להפסד.
   </div>
 </div>
 
-<div id="detailView" class="detail hidden"></div>
+<div id="detailView" class="hidden"></div>
 
 <script>
 (function(){
   'use strict';
   var LS_LIST='mm_watchlist';
   var STARTERS=['AAPL','MSFT','NVDA'];
+  var REDUCE=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   var state={ list:[], analyses:{} };
 
-  function loadList(){ try{ state.list=JSON.parse(localStorage.getItem(LS_LIST)||'[]'); }catch(e){ state.list=[]; } }
-  function saveList(){ localStorage.setItem(LS_LIST, JSON.stringify(state.list)); }
-
-  function scoreColor(s){
-    if(s>=70) return '#2ecc71';
-    if(s>=55) return '#7bd88a';
-    if(s>45)  return '#f1c40f';
-    if(s>30)  return '#ff9f6a';
-    return '#ff5b6a';
-  }
-
+  var GROUPS=[
+    {title:'מגמה וממוצעים', keys:['sma200','goldencross','momentum']},
+    {title:'מומנטום ותנודתיות', keys:['macd','rsi','stoch','bollinger','obv']}
+  ];
   var EXPL={
     sma200:'הקו המפריד בין מגמת עלייה לירידה ארוכת טווח. מחיר מעל הממוצע נחשב חיובי.',
-    goldencross:'כשהממוצע הקצר (50) עובר מעל הארוך (200) — סימן קלאסי למגמת עלייה שמתחילה.',
-    momentum:'מניות שעלו בשנה האחרונה נוטות סטטיסטית להמשיך לעלות. האינדיקטור עם הביסוס האקדמי החזק ביותר.',
+    goldencross:'כשהממוצע הקצר (50) חוצה מעל הארוך (200) — סימן קלאסי לתחילת מגמת עלייה.',
+    momentum:'מניות שעלו בשנה האחרונה נוטות סטטיסטית להמשיך לעלות. הביסוס האקדמי החזק ביותר.',
     macd:'מזהה מתי המומנטום של המניה מתהפך — מירידה לעלייה או להפך.',
     rsi:'מודד אם המניה "התחממה" מדי (מעל 70) או "התקררה" מדי (מתחת 30) לטווח הקצר.',
-    stoch:'משווה את המחיר לטווח האחרון. טוב לזהות קצוות, אך במגמה חזקה יכול לתת איתות מוקדם.',
+    stoch:'משווה את המחיר לטווח האחרון. טוב לזהות קצוות, אך במגמה חזקה עלול להקדים.',
     bollinger:'רצועה סביב המחיר שמתרחבת לפי התנודתיות. חריגה מהרצועה = מהלך קיצוני.',
     obv:'בודק אם כסף אמיתי נכנס למניה (נפח קונים) או יוצא ממנה.'
   };
 
-  // ---------- שליפה מהשרת שלנו ----------
+  function loadList(){ try{ state.list=JSON.parse(localStorage.getItem(LS_LIST)||'[]'); }catch(e){ state.list=[]; } }
+  function saveList(){ localStorage.setItem(LS_LIST, JSON.stringify(state.list)); }
+
+  // score -> band {color, label}
+  function band(s){
+    if(s>=80) return {c:'var(--sbuy)', k:'buy'};
+    if(s>=60) return {c:'var(--buy)',  k:'buy'};
+    if(s>=40) return {c:'var(--hold)', k:'neu'};
+    if(s>=20) return {c:'var(--sell)', k:'sell'};
+    return {c:'var(--ssell)', k:'sell'};
+  }
+  var BANDCOL=['#F6465D','#FB7185','#8B929E','#34D399','#00D37F']; // strong sell -> strong buy
+  function esc(x){ return (x==null?'':(''+x)).replace(/[&<>"]/g,function(m){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m];}); }
+
   function analyzeSymbol(sym){
-    return fetch('/api/analyze?symbol='+encodeURIComponent(sym))
-      .then(function(r){ return r.json(); });
+    return fetch('/api/analyze?symbol='+encodeURIComponent(sym)).then(function(r){ return r.json(); });
   }
 
-  // ---------- רשימה ----------
+  // ---------- list ----------
+  function skeleton(sym){
+    return '<div class="card-top"><div><div class="sym">'+esc(sym)+'</div>'+
+      '<div class="sk" style="width:96px;height:12px;margin-top:7px"></div></div>'+
+      '<div class="sk" style="width:70px;height:34px"></div></div>'+
+      '<div class="reco-row"><div class="sk" style="width:150px;height:44px"></div>'+
+      '<div class="sk" style="width:96px;height:26px"></div></div>';
+  }
   function render(){
-    var cards=document.getElementById('cards');
+    var wrap=document.getElementById('cards');
     var empty=document.getElementById('emptyState');
-    cards.innerHTML='';
+    wrap.innerHTML='';
     if(state.list.length===0){ empty.classList.remove('hidden'); return; }
     empty.classList.add('hidden');
 
@@ -184,108 +268,138 @@
       var a=state.analyses[sym];
       var card=document.createElement('div');
       card.className='card';
-      if(!a){
-        card.innerHTML='<div class="card-top"><div><div class="sym">'+sym+'</div><div class="cname">טוען…</div></div></div>';
-        cards.appendChild(card); return;
-      }
+      if(!a){ card.innerHTML=skeleton(sym); wrap.appendChild(card); return; }
       if(!a.ok){
-        card.innerHTML='<div class="card-top"><div><div class="sym">'+sym+'</div>'+
-          '<div class="cname" style="color:var(--sell)">'+(a.reason||'שגיאה')+'</div></div>'+
-          '<button class="icon-btn" data-del="'+sym+'">🗑</button></div>';
-        cards.appendChild(card); return;
+        card.innerHTML='<div class="card-top"><div><div class="sym">'+esc(sym)+'</div>'+
+          '<div class="cname" style="color:var(--down)">'+esc(a.reason||'לא נמצאו נתונים')+'</div></div>'+
+          '<button class="icon-btn" data-del="'+esc(sym)+'">✕</button></div>';
+        wrap.appendChild(card); return;
       }
-      var col=scoreColor(a.score100);
-      var chCls=a.change>=0?'up':'down', chSign=a.change>=0?'+':'';
-      var dots='';
-      a.indicators.forEach(function(i){
-        var c=i.signal==='buy'?'buy':i.signal==='sell'?'sell':'neu';
-        dots+='<span class="dot '+c+'"></span>';
-      });
+      var b=band(a.score100);
+      var chCls=a.change>=0?'up':'down', sg=a.change>=0?'+':'', arr=a.change>=0?'▲':'▼';
       card.innerHTML=
-        '<div class="strip" style="background:'+col+'"></div>'+
+        '<div class="strip" style="background:'+b.c+'"></div>'+
         '<div class="card-top">'+
-          '<div><div class="sym">'+a.symbol+'</div><div class="cname">'+(a.name||'')+'</div></div>'+
-          '<div class="price"><div class="p">$'+a.price.toFixed(2)+'</div>'+
-            '<div class="ch '+chCls+'">'+chSign+a.change.toFixed(2)+' ('+chSign+a.changePct.toFixed(2)+'%)</div></div>'+
+          '<div style="min-width:0"><div class="sym">'+esc(a.symbol)+'</div><div class="cname">'+esc(a.name||'')+'</div></div>'+
+          '<div class="price"><div class="p num">$'+a.price.toFixed(2)+'</div>'+
+            '<div class="ch '+chCls+' num">'+arr+' '+sg+a.change.toFixed(2)+' ('+sg+a.changePct.toFixed(2)+'%)</div></div>'+
         '</div>'+
         '<div class="reco-row">'+
-          '<div class="reco-badge">'+
-            '<div class="score-pill" style="background:'+col+'">'+a.score100+'</div>'+
-            '<div><div class="reco-txt">'+a.recommendation+'</div>'+
-            '<div class="reco-sub">'+a.agreement.buy+' בעד · '+a.agreement.sell+' נגד</div></div>'+
+          '<div class="badge">'+
+            '<div class="score-pill num" style="background:'+b.c+'">'+a.score100+'</div>'+
+            '<div style="min-width:0"><div class="reco-txt" style="color:'+b.c+'">'+esc(a.recommendation)+'</div>'+
+              '<div class="reco-sub">ציון משוקלל · 8 אינדיקטורים</div></div>'+
           '</div>'+
-          '<div class="dots">'+dots+'</div>'+
+          '<div class="counts">'+
+            '<span class="cnt b num">▲ '+a.agreement.buy+'</span>'+
+            '<span class="cnt n num">'+a.agreement.neutral+'</span>'+
+            '<span class="cnt s num">▼ '+a.agreement.sell+'</span>'+
+          '</div>'+
         '</div>';
       card.addEventListener('click', function(e){
         if(e.target.getAttribute('data-del')) return;
         showDetail(sym);
       });
-      cards.appendChild(card);
+      wrap.appendChild(card);
     });
-    Array.prototype.forEach.call(cards.querySelectorAll('[data-del]'), function(b){
-      b.addEventListener('click', function(e){ e.stopPropagation(); removeSymbol(b.getAttribute('data-del')); });
+    Array.prototype.forEach.call(wrap.querySelectorAll('[data-del]'), function(btn){
+      btn.addEventListener('click', function(e){ e.stopPropagation(); removeSymbol(btn.getAttribute('data-del')); });
     });
   }
 
-  // ---------- פירוט ----------
-  function gaugeSVG(score, color){
-    var r=52, c=2*Math.PI*r, off=c*(1-score/100);
-    return '<svg width="120" height="120" viewBox="0 0 120 120">'+
-      '<circle cx="60" cy="60" r="'+r+'" fill="none" stroke="#2a3547" stroke-width="11"/>'+
-      '<circle cx="60" cy="60" r="'+r+'" fill="none" stroke="'+color+'" stroke-width="11" '+
-        'stroke-linecap="round" stroke-dasharray="'+c+'" stroke-dashoffset="'+off+'" transform="rotate(-90 60 60)"/></svg>';
+  // ---------- gauge ----------
+  function polar(score){ var a=Math.PI*(1-score/100); return [100+80*Math.cos(a), 100-80*Math.sin(a)]; }
+  function arcPath(s0,s1){ var p=polar(s0), q=polar(s1); return 'M'+p[0].toFixed(2)+' '+p[1].toFixed(2)+' A80 80 0 0 1 '+q[0].toFixed(2)+' '+q[1].toFixed(2); }
+  function gaugeSVG(){
+    var bands='';
+    for(var i=0;i<5;i++){ var s0=i*20+1.2, s1=(i+1)*20-1.2;
+      bands+='<path d="'+arcPath(s0,s1)+'" fill="none" stroke="'+BANDCOL[i]+'" stroke-width="13" stroke-linecap="round"/>';
+    }
+    return '<svg viewBox="0 0 200 116">'+bands+
+      '<g id="gmark"><circle cx="20" cy="100" r="9" fill="#0B0E11"/><circle id="gdot" cx="20" cy="100" r="6.5" fill="#E6E8EB"/></g></svg>';
+  }
+  function animateGauge(score, numEl, dotEl){
+    var end=polar(score);
+    if(REDUCE){ numEl.firstChild.nodeValue=String(score); dotEl.setAttribute('cx',end[0]); dotEl.setAttribute('cy',end[1]);
+      dotEl.previousSibling&&dotEl.previousSibling.setAttribute&&dotEl.previousSibling.setAttribute('cx',end[0]); return; }
+    var t0=null, dur=650;
+    function step(ts){
+      if(t0===null) t0=ts; var k=Math.min(1,(ts-t0)/dur); var e=1-Math.pow(1-k,3);
+      var cur=Math.round(score*e); var p=polar(score*e);
+      numEl.firstChild.nodeValue=String(cur);
+      dotEl.setAttribute('cx',p[0].toFixed(2)); dotEl.setAttribute('cy',p[1].toFixed(2));
+      var ring=dotEl.previousSibling; if(ring&&ring.setAttribute){ ring.setAttribute('cx',p[0].toFixed(2)); ring.setAttribute('cy',p[1].toFixed(2)); }
+      if(k<1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  // ---------- detail ----------
+  function indRow(i){
+    var sc=i.signal==='buy'?'sig-buy':i.signal==='sell'?'sig-sell':'sig-neu';
+    var st=i.signal==='buy'?'קנייה':i.signal==='sell'?'מכירה':'ניטרלי';
+    var gl=i.signal==='buy'?'▲':i.signal==='sell'?'▼':'▬';
+    var bstyle=i.score>=0
+      ? 'inset-inline-start:50%;width:'+Math.min(50,i.score*50)+'%;background:var(--up);'
+      : 'inset-inline-end:50%;width:'+Math.min(50,-i.score*50)+'%;background:var(--down);';
+    return '<div class="ind">'+
+      '<div class="ind-top"><div style="min-width:0"><div class="ind-name">'+esc(i.name)+'</div>'+
+        '<div class="ind-val num">'+esc(i.detail||'')+'</div></div>'+
+        '<div class="ind-sig '+sc+'">'+gl+' '+st+'</div></div>'+
+      (EXPL[i.key]?'<div class="ind-expl">'+EXPL[i.key]+'</div>':'')+
+      '<div class="wbar"><i></i><b style="'+bstyle+'"></b></div></div>';
   }
   function showDetail(sym){
     var a=state.analyses[sym];
     if(!a||!a.ok) return;
-    var col=scoreColor(a.score100);
-    var chCls=a.change>=0?'up':'down', chSign=a.change>=0?'+':'';
-    var inds='';
-    a.indicators.forEach(function(i){
-      var sc=i.signal==='buy'?'sig-buy':i.signal==='sell'?'sig-sell':'sig-neu';
-      var st=i.signal==='buy'?'קנייה':i.signal==='sell'?'מכירה':'ניטרלי';
-      var arrow=i.signal==='buy'?'▲':i.signal==='sell'?'▼':'■';
-      var bstyle=i.score>=0
-        ? 'left:50%;width:'+(i.score*50)+'%;background:var(--buy);'
-        : 'right:50%;width:'+(-i.score*50)+'%;background:var(--sell);';
-      inds+=
-        '<div class="ind">'+
-          '<div class="ind-top"><div class="ind-name">'+arrow+' '+i.name+'</div>'+
-            '<div class="ind-sig '+sc+'">'+st+'</div></div>'+
-          '<div class="ind-detail">'+i.detail+'</div>'+
-          '<div class="ind-expl">'+(EXPL[i.key]||'')+'</div>'+
-          '<div class="wbar"><i></i><b style="'+bstyle+'"></b></div>'+
-        '</div>';
+    var b=band(a.score100);
+    var chCls=a.change>=0?'up':'down', sg=a.change>=0?'+':'', arr=a.change>=0?'▲':'▼';
+    var byKey={}; a.indicators.forEach(function(i){ byKey[i.key]=i; });
+    var used={}, sections='';
+    GROUPS.forEach(function(g){
+      var rows='', nb=0,nn=0,ns=0;
+      g.keys.forEach(function(k){ var i=byKey[k]; if(!i) return; used[k]=1;
+        rows+=indRow(i); if(i.signal==='buy')nb++; else if(i.signal==='sell')ns++; else nn++; });
+      if(!rows) return;
+      sections+='<div class="sec-title">'+g.title+'<span class="mini"><b>▲'+nb+'</b> · <s>'+nn+'</s> · <u>▼'+ns+'</u></span></div>'+rows;
     });
+    var extra=a.indicators.filter(function(i){ return !used[i.key]; });
+    if(extra.length){ sections+='<div class="sec-title">נוספים</div>'+extra.map(indRow).join(''); }
+
     var d=document.getElementById('detailView');
     d.innerHTML=
-      '<div class="back" id="backBtn">‹ חזרה לרשימה</div>'+
-      '<div class="d-head"><div class="d-sym">'+a.symbol+'</div><div class="d-name">'+(a.name||'')+'</div>'+
-        '<div class="d-price"><div class="p">$'+a.price.toFixed(2)+'</div>'+
-          '<div class="ch '+chCls+'">'+chSign+a.change.toFixed(2)+' ('+chSign+a.changePct.toFixed(2)+'%)</div></div></div>'+
-      '<div class="gauge-wrap"><div class="gauge">'+gaugeSVG(a.score100,col)+
-          '<div class="num">'+a.score100+'<small>מתוך 100</small></div></div>'+
-        '<div class="gsummary"><div class="rtitle" style="color:'+col+'">'+a.recommendation+'</div>'+
-          '<div class="rmeta">ציון משוקלל מ-'+a.agreement.total+' אינדיקטורים.</div>'+
-          '<div class="agree"><span class="b">'+a.agreement.buy+' בעד</span>'+
-            '<span class="n">'+a.agreement.neutral+' ניטרלי</span>'+
-            '<span class="s">'+a.agreement.sell+' נגד</span></div></div></div>'+
-      '<div class="sec-title">פירוט האינדיקטורים</div>'+inds+
-      '<div class="disclaimer">ניתוח טכני ממוחשב למטרות מידע בלבד — לא ייעוץ השקעות. החלטות ההשקעה באחריותך.</div>';
+      '<div class="back" id="backBtn">‹ חזרה</div>'+
+      '<div class="d-head"><div class="d-sym">'+esc(a.symbol)+'</div><div class="d-name">'+esc(a.name||'')+'</div>'+
+        '<div class="d-price"><div class="p num">$'+a.price.toFixed(2)+'</div>'+
+          '<div class="ch '+chCls+' num">'+arr+' '+sg+a.change.toFixed(2)+' ('+sg+a.changePct.toFixed(2)+'%)</div></div></div>'+
+      '<div class="gauge-card"><div class="gauge">'+gaugeSVG()+
+          '<div class="gauge-center"><div class="gscore" id="gscore" style="color:'+b.c+'">0</div>'+
+          '<div class="glabel" style="color:'+b.c+'">'+esc(a.recommendation)+'</div></div></div>'+
+        '<div class="summary">'+
+          '<div class="scnt b num">▲ '+a.agreement.buy+' <small>בעד</small></div>'+
+          '<div class="scnt n num">'+a.agreement.neutral+' <small>ניטרלי</small></div>'+
+          '<div class="scnt s num">▼ '+a.agreement.sell+' <small>נגד</small></div></div>'+
+        '<div class="gsub">ציון משוקלל מ-'+a.agreement.total+' אינדיקטורים טכניים</div></div>'+
+      sections+
+      '<div class="disclaimer">ניתוח טכני ממוחשב למטרות מידע בלבד — אינו ייעוץ השקעות. החלטות ההשקעה באחריותך.</div>';
+
     document.getElementById('listView').classList.add('hidden');
     d.classList.remove('hidden');
+    window.scrollTo(0,0);
+    var numEl=document.getElementById('gscore');
+    var dotEl=document.getElementById('gdot');
+    if(numEl&&dotEl) animateGauge(a.score100, numEl, dotEl);
     document.getElementById('backBtn').addEventListener('click', function(){
-      d.classList.add('hidden');
+      d.classList.add('hidden'); d.innerHTML='';
       document.getElementById('listView').classList.remove('hidden');
       window.scrollTo(0,0);
     });
-    window.scrollTo(0,0);
   }
 
-  // ---------- פעולות ----------
+  // ---------- actions ----------
   function showErr(msg){
     var e=document.getElementById('errBox');
-    e.innerHTML='<div class="err">'+msg+'</div>';
+    e.innerHTML='<div class="err">'+esc(msg)+'</div>';
     setTimeout(function(){ e.innerHTML=''; }, 6000);
   }
   function setLoading(txt){
@@ -294,41 +408,39 @@
   }
   function removeSymbol(sym){
     state.list=state.list.filter(function(s){return s!==sym;});
-    delete state.analyses[sym];
-    saveList(); render();
+    delete state.analyses[sym]; saveList(); render();
   }
-  function addSymbol(){
+  function addSymbol(sym){
     var inp=document.getElementById('symInput');
-    var sym=(inp.value||'').trim().toUpperCase();
+    sym=(sym||inp.value||'').trim().toUpperCase().replace(/[^A-Z0-9.\-]/g,'');
     if(!sym) return;
     if(state.list.indexOf(sym)>=0){ inp.value=''; return; }
-    state.list.push(sym); saveList(); inp.value=''; render();
-    loadOne(sym);
+    state.list.push(sym); saveList(); inp.value=''; render(); loadOne(sym);
   }
   function loadOne(sym){
-    return analyzeSymbol(sym).then(function(res){
-      state.analyses[sym]=res; render();
-    }).catch(function(err){
-      state.analyses[sym]={ok:false, symbol:sym, reason:(err&&err.message)||'שגיאה בטעינה'};
-      render();
-    });
+    return analyzeSymbol(sym).then(function(res){ state.analyses[sym]=res; render(); })
+      .catch(function(err){ state.analyses[sym]={ok:false,symbol:sym,reason:(err&&err.message)||'שגיאה בטעינה'}; render(); });
   }
   function loadAll(){
     if(state.list.length===0){ render(); return; }
     var i=0;
-    function next(){
+    (function next(){
       if(i>=state.list.length){ setLoading(''); return; }
       var sym=state.list[i]; i++;
       setLoading('טוען '+i+' מתוך '+state.list.length+'…');
-      loadOne(sym).then(function(){ setTimeout(next, 350); });
-    }
-    next();
+      loadOne(sym).then(function(){ setTimeout(next, 320); });
+    })();
   }
 
-  document.getElementById('addBtn').addEventListener('click', addSymbol);
+  document.getElementById('addBtn').addEventListener('click', function(){ addSymbol(); });
   document.getElementById('symInput').addEventListener('keydown', function(e){ if(e.key==='Enter') addSymbol(); });
-  document.getElementById('refreshBtn').addEventListener('click', function(){
-    state.analyses={}; render(); loadAll();
+  document.getElementById('refreshBtn').addEventListener('click', function(e){
+    var btn=e.currentTarget; var svg=btn.querySelector('svg'); if(svg) svg.classList.add('spin');
+    state.analyses={}; render();
+    loadAll(); setTimeout(function(){ if(svg) svg.classList.remove('spin'); }, 900);
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-add]'), function(c){
+    c.addEventListener('click', function(){ addSymbol(c.getAttribute('data-add')); });
   });
 
   loadList();
