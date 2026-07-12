@@ -64,11 +64,36 @@ type sseClient struct {
 }
 
 const (
-	quoteTTL      = 15 * time.Second       // מגן על מגבלת הבקשות של Twelve Data
 	broadcastTick = 500 * time.Millisecond // עד 2 עדכונים חיים בשנייה — חלק, לא מציף
-	maxDeepPages  = 4                      // עד כמה עמודים אחורה נדפדף בטווח "מקסימום"
+	maxDeepPages  = 2                      // 3 עמודים × 5000 = ~60 שנה, מספיק לכל מניה
 	chartPoints   = 400                    // דילול נקודות הגרף — יותר מזה לא נראה על מסך טלפון
 )
+
+// marketHours — האם הבורסה בארה"ב פתוחה עכשיו (לפי השעון בלבד).
+// משמש רק כדי להחליט כמה זמן להחזיק נתונים במטמון — כשהשוק סגור שום דבר לא זז,
+// אז אין שום סיבה לבזבז בקשות אצל הספק.
+func marketHours() bool {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return true // ליתר ביטחון — מטמון קצר
+	}
+	t := time.Now().In(ny)
+	if t.Weekday() == time.Saturday || t.Weekday() == time.Sunday {
+		return false
+	}
+	m := t.Hour()*60 + t.Minute()
+	return m >= 9*60+30 && m < 16*60
+}
+
+// ttl — מטמון קצר כשהשוק פתוח, ארוך כשהוא סגור.
+func ttl(open, closed time.Duration) time.Duration {
+	if marketHours() {
+		return open
+	}
+	return closed
+}
+
+func quoteTTL() time.Duration { return ttl(5*time.Minute, 6*time.Hour) }
 
 func New(cfg config.Config) *Server {
 	s := &Server{
@@ -355,18 +380,14 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 // ---------- גרף ----------
 
-func rangeSpec(rng string) (interval string, size int, ttl time.Duration) {
+func rangeSpec(rng string) (interval string, size int, cacheFor time.Duration) {
 	switch rng {
 	case "1h":
-		return "1min", 60, 60 * time.Second
+		return "1min", 60, ttl(2*time.Minute, 6*time.Hour)
 	case "1w":
-		return "1h", 40, 2 * time.Minute
-	case "1m":
-		return "1day", 23, 6 * time.Hour
-	case "1y":
-		return "1day", 252, 6 * time.Hour
+		return "1h", 40, ttl(15*time.Minute, 6*time.Hour)
 	default: // 1d
-		return "5min", 78, 60 * time.Second
+		return "5min", 78, ttl(3*time.Minute, 6*time.Hour)
 	}
 }
 
@@ -434,7 +455,7 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	interval, size, ttl := rangeSpec(rng)
+	interval, size, cacheFor := rangeSpec(rng)
 	key := symbol + "|" + rng
 
 	s.mu.Lock()
@@ -452,7 +473,7 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	s.series[key] = cachedSeries{at: time.Now(), ttl: ttl, pts: pts}
+	s.series[key] = cachedSeries{at: time.Now(), ttl: cacheFor, pts: pts}
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, seriesResponse{OK: true, Symbol: symbol, Range: rng, Points: pts})
 }
@@ -461,7 +482,7 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getQuote(symbol string) (marketdata.Quote, error) {
 	s.mu.Lock()
-	if c, ok := s.quotes[symbol]; ok && time.Since(c.at) < quoteTTL {
+	if c, ok := s.quotes[symbol]; ok && time.Since(c.at) < quoteTTL() {
 		s.mu.Unlock()
 		return c.q, nil
 	}

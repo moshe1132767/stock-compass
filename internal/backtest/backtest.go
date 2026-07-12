@@ -3,9 +3,11 @@
 //
 // הכלל: בכל יום מריצים את אותם 8 אינדיקטורים על אותו חלון נרות שהאפליקציה
 // מציגה היום (indicators.Window), ומקבלים את אותו ציון 0–100 בדיוק.
-//   ציון >= 55  ("נטייה לקנייה" ומעלה) → מחזיקים את המניה למחרת.
-//   ציון <= 45  ("נטייה למכירה" ומטה)  → יוצאים למזומן.
-//   באמצע ("החזקה/המתנה")              → נשארים כמו שהיינו.
+//
+//	ציון >= 55  ("נטייה לקנייה" ומעלה) → מחזיקים את המניה למחרת.
+//	ציון <= 45  ("נטייה למכירה" ומטה)  → יוצאים למזומן.
+//	באמצע ("החזקה/המתנה")              → נשארים כמו שהיינו.
+//
 // הפעולה מתבצעת בסגירת יום המסחר שאחרי האות — בלי הצצה לעתיד.
 package backtest
 
@@ -33,10 +35,16 @@ type Period struct {
 	BuyHold   float64 `json:"buyHold"`  // תשואת קנה־והחזק ב-%
 	StratVal  float64 `json:"stratVal"` // מה היו הופכים 10,000$
 	HoldVal   float64 `json:"holdVal"`
-	Trades    int     `json:"trades"`  // כמה פעולות קנייה/מכירה
-	TimeIn    float64 `json:"timeIn"`  // אחוז הימים שבהם היינו בתוך השוק
-	MaxDD     float64 `json:"maxDD"`   // הירידה הכי גדולה בדרך (%)
-	HoldDD    float64 `json:"holdDD"`  // אותו דבר לקנה־והחזק
+	Trades    int     `json:"trades"` // כמה פעולות קנייה/מכירה
+	TimeIn    float64 `json:"timeIn"` // אחוז הימים שבהם היינו בתוך השוק
+	MaxDD     float64 `json:"maxDD"`  // הירידה הכי גדולה בדרך (%)
+	HoldDD    float64 `json:"holdDD"` // אותו דבר לקנה־והחזק
+
+	// טווח הציון בתקופה — מסביר בדיוק למה היו (או לא היו) פעולות.
+	MinScore int `json:"minScore"`
+	MaxScore int `json:"maxScore"`
+	BuyAt    int `json:"buyAt"`  // סף הכניסה
+	SellAt   int `json:"sellAt"` // סף היציאה
 }
 
 // Result — כל התקופות יחד.
@@ -112,6 +120,7 @@ func Run(candles []indicators.Candle) Result {
 		peakEq, peakHold := eq, hold
 		var ddEq, ddHold float64
 		trades, inDays := 0, 0
+		minSc, maxSc := 100, 0
 
 		for i := s; i < n; i++ {
 			r := candles[i].Close/candles[i-1].Close - 1
@@ -122,6 +131,14 @@ func Run(candles []indicators.Candle) Result {
 			hold *= 1 + r
 			if pos[i] != pos[i-1] {
 				trades++
+			}
+			// הציון שהניע את היום הזה נקבע אתמול — זה הטווח שקבע את הפעולות
+			sc := score[i-1]
+			if sc < minSc {
+				minSc = sc
+			}
+			if sc > maxSc {
+				maxSc = sc
 			}
 			peakEq = math.Max(peakEq, eq)
 			peakHold = math.Max(peakHold, hold)
@@ -140,6 +157,8 @@ func Run(candles []indicators.Candle) Result {
 		p.TimeIn = float64(inDays) / float64(d.Days) * 100
 		p.MaxDD = ddEq * 100
 		p.HoldDD = ddHold * 100
+		p.MinScore, p.MaxScore = minSc, maxSc
+		p.BuyAt, p.SellAt = buyAt, sellAt
 		res.Periods = append(res.Periods, p)
 	}
 	return res

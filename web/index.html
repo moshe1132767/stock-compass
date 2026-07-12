@@ -209,6 +209,7 @@
   .bt-verdict.bad{background:var(--down-wash);color:var(--down);}
   .bt-verdict.tie{background:var(--neu-wash);color:var(--muted);}
   .bt-stats{color:var(--dim);font-size:11.5px;margin-top:10px;line-height:1.8;}
+  .bt-stats b{color:var(--muted);font-weight:800;}
   .lt{direction:ltr;unicode-bidi:isolate;}   /* מספרים ואחוזים בתוך משפט בעברית */
   .bt-note{color:var(--dim);font-size:11px;margin-top:12px;line-height:1.6;
     border-top:1px solid var(--border);padding-top:10px;}
@@ -383,13 +384,14 @@
   function onType(){
     var q=(document.getElementById('symInput').value||'').trim();
     clearTimeout(state.sgTimer);
-    if(q.length<1){ hideSuggest(); return; }
+    // כל חיפוש עולה בקשה אצל ספק הנתונים — לכן מחכים שיפסיק להקליד, ומאות אחת אין טעם
+    if(q.length<2){ hideSuggest(); return; }
     state.sgTimer=setTimeout(function(){
       apiSearch(q).then(function(items){
         if((document.getElementById('symInput').value||'').trim()!==q) return;
         showSuggest(items||[], q);
       }).catch(hideSuggest);
-    }, 250);
+    }, 400);
   }
 
   // ---------- list ----------
@@ -684,10 +686,17 @@
     else if(win){ vcls='good'; verdict='ההמלצות הרוויחו '+gap+' יותר מאשר פשוט לקנות ולהחזיק.'; }
     else { vcls='bad'; verdict='עדיף היה פשוט לקנות ולהחזיק — ההמלצות פיגרו ב-'+gap+'.'; }
 
+    var rng='הציון נע בין '+lt(p.minScore)+' ל-'+lt(p.maxScore);
     var acts;
-    if(p.trades===0)      acts='בלי אף פעולה — ההמלצה לא השתנתה בכל התקופה';
-    else if(p.trades===1) acts='פעולת קנייה/מכירה אחת';
-    else                  acts=lt(p.trades)+' פעולות קנייה/מכירה';
+    if(p.trades===0){
+      // אפס פעולות זה לא באג — פשוט הציון אף פעם לא ירד לתחום המכירה. מראים למה.
+      acts='<b>אף פעם לא היה צריך למכור.</b> '+rng+', ואף פעם לא ירד אל מתחת ל-'+
+           lt(p.sellAt)+' — הסף שבו ההמלצה הופכת למכירה. לכן "להקשיב" פירושו פשוט להישאר בפנים, '+
+           'ולכן שתי התוצאות זהות.';
+    } else {
+      var word = p.trades===1 ? 'פעולת קנייה/מכירה אחת' : lt(p.trades)+' פעולות קנייה/מכירה';
+      acts=word+' · '+lt(Math.round(p.timeIn)+'%')+' מהזמן היית בתוך השוק · '+rng;
+    }
 
     box.innerHTML=
       '<div class="bt-grid">'+
@@ -706,7 +715,7 @@
       '</div>'+
       '<div class="bt-verdict '+vcls+'">'+verdict+'</div>'+
       '<div class="bt-stats">'+
-        acts+' · '+lt(Math.round(p.timeIn)+'%')+' מהזמן היית בתוך השוק<br>'+
+        acts+'<br>'+
         'הירידה הכי גדולה בדרך: '+lt(p.maxDD.toFixed(0)+'%')+
         ' (בקנייה והחזקה: '+lt(p.holdDD.toFixed(0)+'%')+')'+
       '</div>';

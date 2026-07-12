@@ -3,20 +3,68 @@ package marketdata
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"stockcompass/internal/indicators"
 )
 
+// מכסת הספק בתוכנית החינמית: 8 קרדיטים לדקה. אנחנו עוצרים ב-7 כדי להשאיר אוויר.
+const (
+	rateMax    = 7
+	rateWindow = time.Minute
+	rateWait   = 25 * time.Second // כמה זמן בקשה מוכנה לחכות בתור לפני שהיא מוותרת
+)
+
+// ErrBusy — נגמרה המכסה לדקה הזו ולא נפנה מקום בזמן סביר.
+var ErrBusy = errors.New("יותר מדי בקשות לספק הנתונים כרגע — נסה שוב בעוד רגע")
+
+// limiter — בלם קצב: לא נשלח לספק יותר מ-max בקשות בכל חלון זמן.
+// זה מה שמונע את השגיאה "נגמרו הקרדיטים לדקה הזו" — במקום להיכשל, מחכים בתור.
+type limiter struct {
+	mu   sync.Mutex
+	hits []time.Time
+}
+
+func (l *limiter) take(maxWait time.Duration) error {
+	deadline := time.Now().Add(maxWait)
+	for {
+		l.mu.Lock()
+		now := time.Now()
+		keep := l.hits[:0]
+		for _, t := range l.hits {
+			if now.Sub(t) < rateWindow {
+				keep = append(keep, t)
+			}
+		}
+		l.hits = keep
+		if len(l.hits) < rateMax {
+			l.hits = append(l.hits, now)
+			l.mu.Unlock()
+			return nil
+		}
+		sleep := rateWindow - now.Sub(l.hits[0]) + 100*time.Millisecond
+		l.mu.Unlock()
+		if time.Now().Add(sleep).After(deadline) {
+			return ErrBusy
+		}
+		log.Printf("בלם קצב: המכסה מלאה — ממתין %s", sleep.Round(time.Second))
+		time.Sleep(sleep)
+	}
+}
+
 type Client struct {
 	tdKey string
 	fhKey string
 	http  *http.Client
+	lim   limiter
 }
 
 func New(twelveDataKey, finnhubKey string) *Client {
@@ -32,13 +80,28 @@ func (c *Client) HasKey() bool { return c.tdKey != "" }
 
 func pf(s string) float64 { f, _ := strconv.ParseFloat(s, 64); return f }
 
+// get — כל פנייה לספק עוברת דרך בלם הקצב.
 func (c *Client) get(u string, v any) error {
+	if err := c.lim.take(rateWait); err != nil {
+		return err
+	}
 	resp, err := c.http.Get(u)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	return json.NewDecoder(resp.Body).Decode(v)
+}
+
+// apiErr — הופך שגיאת מכסה של הספק להודעה ברורה בעברית.
+func apiErr(code int, msg, fallback string) error {
+	if code == 429 || strings.Contains(strings.ToLower(msg), "api credits") {
+		return ErrBusy
+	}
+	if msg == "" {
+		msg = fallback
+	}
+	return fmt.Errorf("%s", msg)
 }
 
 // Meta — מידע על הנייר (סוג, בורסה) כפי שמגיע מ-time_series.
@@ -70,6 +133,7 @@ type tdSeriesResp struct {
 	} `json:"values"`
 	Status  string `json:"status"`
 	Message string `json:"message"`
+	Code    int    `json:"code"`
 }
 
 // MaxCandles — כמות הנרות המרבית שהספק מחזיר בבקשה אחת (~20 שנות מסחר). נבדק מול ה-API.
@@ -97,11 +161,7 @@ func (c *Client) history(symbol, endDate string) ([]indicators.Candle, Meta, err
 		return nil, Meta{}, err
 	}
 	if r.Status == "error" || len(r.Values) == 0 {
-		msg := r.Message
-		if msg == "" {
-			msg = "לא נמצאו נתונים עבור " + symbol
-		}
-		return nil, Meta{}, fmt.Errorf("%s", msg)
+		return nil, Meta{}, apiErr(r.Code, r.Message, "לא נמצאו נתונים עבור "+symbol)
 	}
 	candles := make([]indicators.Candle, 0, len(r.Values))
 	for i := len(r.Values) - 1; i >= 0; i-- { // Twelve Data מחזיר newest-first
@@ -129,11 +189,7 @@ func (c *Client) Series(symbol, interval string, outputsize int) ([]Point, error
 		return nil, err
 	}
 	if r.Status == "error" || len(r.Values) == 0 {
-		msg := r.Message
-		if msg == "" {
-			msg = "אין נתוני גרף עבור " + symbol
-		}
-		return nil, fmt.Errorf("%s", msg)
+		return nil, apiErr(r.Code, r.Message, "אין נתוני גרף עבור "+symbol)
 	}
 	pts := make([]Point, 0, len(r.Values))
 	for i := len(r.Values) - 1; i >= 0; i-- {
@@ -162,16 +218,13 @@ func (c *Client) Quote(symbol string) (Quote, error) {
 		IsMarketOpen  bool   `json:"is_market_open"`
 		Status        string `json:"status"`
 		Message       string `json:"message"`
+		Code          int    `json:"code"`
 	}
 	if err := c.get(u, &q); err != nil {
 		return Quote{}, err
 	}
 	if q.Status == "error" || q.Close == "" {
-		msg := q.Message
-		if msg == "" {
-			msg = "אין ציטוט עבור " + symbol
-		}
-		return Quote{}, fmt.Errorf("%s", msg)
+		return Quote{}, apiErr(q.Code, q.Message, "אין ציטוט עבור "+symbol)
 	}
 	return Quote{
 		Name: q.Name, Price: pf(q.Close), PrevClose: pf(q.PreviousClose),
