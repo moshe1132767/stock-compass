@@ -20,7 +20,7 @@ spec:
         - name: ghcr-secret
       containers:
         - name: container-0
-          image: ghcr.io/moshe1132767/stock-compass:v1.1
+          image: ghcr.io/moshe1132767/stock-compass:1.1
           ports:
             - containerPort: 3003
           env:

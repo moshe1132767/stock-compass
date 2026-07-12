@@ -1,0 +1,39 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - '.github/workflows/build-android.yml'
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v3
+
+      - name: Build debug APK
+        working-directory: android
+        run: gradle :app:assembleDebug --no-daemon --warning-mode=all
+
+      - name: Rename APK
+        working-directory: android/app/build/outputs/apk/debug
+        run: mv app-debug.apk stock-compass.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stock-compass-apk
+          path: android/app/build/outputs/apk/debug/stock-compass.apk
+          if-no-files-found: error
+          retention-days: 30

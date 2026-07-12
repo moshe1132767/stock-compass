@@ -24,7 +24,7 @@ k8s/deployment.yaml             Deployment + Service + Ingress
 דחיפה ל-`main` בונה ודוחפת אוטומטית את האימג' ל-`ghcr.io/moshe1132767/stock-compass`.
 אחר כך פריסה לקלאסטר:
 ```bash
-kubectl set image deployment/stock-compass container-0=ghcr.io/moshe1132767/stock-compass:vX.Y
+kubectl set image deployment/stock-compass container-0=ghcr.io/moshe1132767/stock-compass:X.Y
 kubectl rollout status deployment/stock-compass
 ```
 
