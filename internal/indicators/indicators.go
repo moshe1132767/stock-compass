@@ -7,6 +7,10 @@ import (
 	"math"
 )
 
+// Window — כמה נרות המנוע מקבל לחישוב. חייב להיות זהה בכל מקום (מסך, זרם חי, סימולציית עבר),
+// אחרת אותו יום יקבל ציון שונה בכל מסלול.
+const Window = 300
+
 // Candle — נר יומי אחד (סדר הקלט: oldest-first).
 type Candle struct {
 	Date   string

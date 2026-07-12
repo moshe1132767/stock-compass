@@ -72,10 +72,26 @@ type tdSeriesResp struct {
 	Message string `json:"message"`
 }
 
-// History — נרות יומיים (oldest-first) + מידע על הנייר.
+// MaxCandles — כמות הנרות המרבית שהספק מחזיר בבקשה אחת (~20 שנות מסחר). נבדק מול ה-API.
+const MaxCandles = 5000
+
+// History — נרות יומיים (oldest-first) + מידע על הנייר. מושך את מלוא העומק הזמין.
 func (c *Client) History(symbol string) ([]indicators.Candle, Meta, error) {
-	u := fmt.Sprintf("https://api.twelvedata.com/time_series?symbol=%s&interval=1day&outputsize=300&apikey=%s",
-		url.QueryEscape(symbol), url.QueryEscape(c.tdKey))
+	return c.history(symbol, "")
+}
+
+// HistoryBefore — עמוד היסטוריה נוסף שמסתיים בתאריך נתון (לשליפת עבר רחוק יותר, לטווח "מקסימום").
+func (c *Client) HistoryBefore(symbol, endDate string) ([]indicators.Candle, error) {
+	cs, _, err := c.history(symbol, endDate)
+	return cs, err
+}
+
+func (c *Client) history(symbol, endDate string) ([]indicators.Candle, Meta, error) {
+	u := fmt.Sprintf("https://api.twelvedata.com/time_series?symbol=%s&interval=1day&outputsize=%d&apikey=%s",
+		url.QueryEscape(symbol), MaxCandles, url.QueryEscape(c.tdKey))
+	if endDate != "" {
+		u += "&end_date=" + url.QueryEscape(endDate)
+	}
 	var r tdSeriesResp
 	if err := c.get(u, &r); err != nil {
 		return nil, Meta{}, err

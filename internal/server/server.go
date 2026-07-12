@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"stockcompass/internal/backtest"
 	"stockcompass/internal/config"
 	"stockcompass/internal/indicators"
 	"stockcompass/internal/livefeed"
@@ -23,7 +25,9 @@ type Server struct {
 	feed *livefeed.Feed
 
 	mu     sync.Mutex
-	hist   map[string]cachedHistory // היסטוריה יומית לכל סימול
+	hist   map[string]cachedHistory // היסטוריה יומית לכל סימול (עד ~20 שנה)
+	deep   map[string]cachedHistory // כל ההיסטוריה שקיימת — לטווח "מקסימום"
+	bt     map[string]cachedBT      // סימולציית עבר
 	quotes map[string]cachedQuote   // ציטוט חי, TTL קצר
 	series map[string]cachedSeries  // סדרות גרף תוך-יומיות
 	search map[string]cachedSearch  // תוצאות חיפוש
@@ -36,6 +40,10 @@ type cachedHistory struct {
 	day     string // YYYY-MM-DD
 	meta    marketdata.Meta
 	candles []indicators.Candle
+}
+type cachedBT struct {
+	day string
+	res backtest.Result
 }
 type cachedQuote struct {
 	at time.Time
@@ -56,8 +64,10 @@ type sseClient struct {
 }
 
 const (
-	quoteTTL      = 15 * time.Second        // מגן על מגבלת הבקשות של Twelve Data
-	broadcastTick = 500 * time.Millisecond  // עד 2 עדכונים חיים בשנייה — חלק, לא מציף
+	quoteTTL      = 15 * time.Second       // מגן על מגבלת הבקשות של Twelve Data
+	broadcastTick = 500 * time.Millisecond // עד 2 עדכונים חיים בשנייה — חלק, לא מציף
+	maxDeepPages  = 4                      // עד כמה עמודים אחורה נדפדף בטווח "מקסימום"
+	chartPoints   = 400                    // דילול נקודות הגרף — יותר מזה לא נראה על מסך טלפון
 )
 
 func New(cfg config.Config) *Server {
@@ -67,6 +77,8 @@ func New(cfg config.Config) *Server {
 		md:      marketdata.New(cfg.TwelveDataKey, cfg.FinnhubKey),
 		feed:    livefeed.New(cfg.FinnhubKey),
 		hist:    make(map[string]cachedHistory),
+		deep:    make(map[string]cachedHistory),
+		bt:      make(map[string]cachedBT),
 		quotes:  make(map[string]cachedQuote),
 		series:  make(map[string]cachedSeries),
 		search:  make(map[string]cachedSearch),
@@ -83,6 +95,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/analyze", s.handleAnalyze)
 	s.mux.HandleFunc("/api/search", s.handleSearch)
 	s.mux.HandleFunc("/api/series", s.handleSeries)
+	s.mux.HandleFunc("/api/backtest", s.handleBacktest)
 	s.mux.HandleFunc("/api/stream", s.handleStream)
 	s.mux.Handle("/", http.FileServer(http.Dir(s.cfg.WebDir)))
 }
@@ -137,12 +150,13 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	candles, meta, err := s.getHistory(symbol)
+	full, meta, err := s.historyRaw(symbol)
 	if err != nil {
 		writeJSON(w, http.StatusOK, indicators.Result{OK: false, Symbol: symbol, Reason: err.Error()})
 		return
 	}
-	s.feed.Subscribe(symbol) // מרגע שהסתכלת על מניה — היא נכנסת לזרם החי
+	candles := tailCopy(full, indicators.Window) // עותק — כאן משנים את מחיר הסגירה האחרון
+	s.feed.Subscribe(symbol)                     // מרגע שהסתכלת על מניה — היא נכנסת לזרם החי
 
 	prevClose := candles[len(candles)-1].Close
 	if len(candles) > 1 {
@@ -364,7 +378,27 @@ type seriesResponse struct {
 	Points []marketdata.Point `json:"points"`
 }
 
-// handleSeries — נקודות לגרף. 1m/1y נגזרים מההיסטוריה במטמון (בלי בקשה נוספת).
+// derivedDays — טווחים שנגזרים מההיסטוריה היומית שכבר במטמון (0 = הכול). אפס בקשות API נוספות.
+var derivedDays = map[string]int{"1m": 23, "1y": 252, "5y": 1260, "max": 0}
+
+// downsample — מדלל נקודות בלי לאבד את הראשונה והאחרונה.
+func downsample(pts []marketdata.Point, max int) []marketdata.Point {
+	if len(pts) <= max || max < 2 {
+		return pts
+	}
+	step := float64(len(pts)-1) / float64(max-1)
+	out := make([]marketdata.Point, 0, max)
+	for i := 0; i < max; i++ {
+		j := int(math.Round(float64(i) * step))
+		if j > len(pts)-1 {
+			j = len(pts) - 1
+		}
+		out = append(out, pts[j])
+	}
+	return out
+}
+
+// handleSeries — נקודות לגרף. חודש/שנה/5 שנים/מקסימום נגזרים מההיסטוריה במטמון (בלי בקשה נוספת).
 func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 	symbol := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("symbol")))
 	rng := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("range")))
@@ -376,24 +410,27 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if rng == "1m" || rng == "1y" {
-		candles, _, err := s.getHistory(symbol)
+	if days, derived := derivedDays[rng]; derived {
+		var candles []indicators.Candle
+		var err error
+		if rng == "max" {
+			candles, err = s.deepHistory(symbol) // כל מה שהספק נותן, גם אחורה בזמן
+		} else {
+			candles, _, err = s.historyRaw(symbol)
+		}
 		if err != nil {
 			writeJSON(w, http.StatusOK, seriesResponse{OK: false, Symbol: symbol, Range: rng, Reason: err.Error()})
 			return
 		}
-		n := 23
-		if rng == "1y" {
-			n = 252
+		if days > 0 && days < len(candles) {
+			candles = candles[len(candles)-days:]
 		}
-		if n > len(candles) {
-			n = len(candles)
-		}
-		pts := make([]marketdata.Point, 0, n)
-		for _, c := range candles[len(candles)-n:] {
+		pts := make([]marketdata.Point, 0, len(candles))
+		for _, c := range candles {
 			pts = append(pts, marketdata.Point{T: c.Date, C: c.Close})
 		}
-		writeJSON(w, http.StatusOK, seriesResponse{OK: true, Symbol: symbol, Range: rng, Points: pts})
+		writeJSON(w, http.StatusOK, seriesResponse{OK: true, Symbol: symbol, Range: rng,
+			Points: downsample(pts, chartPoints)})
 		return
 	}
 
@@ -447,12 +484,14 @@ func (s *Server) cachedQuote(symbol string) (marketdata.Quote, bool) {
 	return c.q, ok
 }
 
-func (s *Server) getHistory(symbol string) ([]indicators.Candle, marketdata.Meta, error) {
+// historyRaw — ההיסטוריה היומית מהמטמון (או מהספק). הפרוסה המוחזרת משותפת — לקריאה בלבד!
+// מי שצריך לשנות נרות ישתמש ב-tailCopy.
+func (s *Server) historyRaw(symbol string) ([]indicators.Candle, marketdata.Meta, error) {
 	today := time.Now().Format("2006-01-02")
 	s.mu.Lock()
 	if c, ok := s.hist[symbol]; ok && c.day == today {
 		s.mu.Unlock()
-		return cloneCandles(c.candles), c.meta, nil
+		return c.candles, c.meta, nil
 	}
 	s.mu.Unlock()
 
@@ -463,10 +502,100 @@ func (s *Server) getHistory(symbol string) ([]indicators.Candle, marketdata.Meta
 	s.mu.Lock()
 	s.hist[symbol] = cachedHistory{day: today, meta: meta, candles: candles}
 	s.mu.Unlock()
-	return cloneCandles(candles), meta, nil
+	return candles, meta, nil
 }
 
-// cachedCandles — קריאה מהמטמון בלבד (בלי לפנות ל-API) — לשימוש בלולאת השידור.
+// deepHistory — כל ההיסטוריה שקיימת למניה, גם מעבר לעומק של בקשה אחת (טווח "מקסימום").
+// מדפדף אחורה בעמודים; אם הספק לא נותן יותר — פשוט מסתפק במה שיש.
+func (s *Server) deepHistory(symbol string) ([]indicators.Candle, error) {
+	today := time.Now().Format("2006-01-02")
+	s.mu.Lock()
+	if c, ok := s.deep[symbol]; ok && c.day == today {
+		s.mu.Unlock()
+		return c.candles, nil
+	}
+	s.mu.Unlock()
+
+	base, _, err := s.historyRaw(symbol)
+	if err != nil {
+		return nil, err
+	}
+	all := append([]indicators.Candle(nil), base...) // עותק — לא נוגעים במטמון
+
+	// אם העמוד הראשון לא היה מלא — כבר יש לנו את כל ההיסטוריה
+	for page := 0; page < maxDeepPages && len(all) >= marketdata.MaxCandles; page++ {
+		oldest := all[0].Date
+		older, err := s.md.HistoryBefore(symbol, dayOf(oldest))
+		if err != nil {
+			break
+		}
+		var fresh []indicators.Candle
+		for _, c := range older {
+			if c.Date < oldest { // תאריכי YYYY-MM-DD — השוואת מחרוזות תקינה
+				fresh = append(fresh, c)
+			}
+		}
+		if len(fresh) == 0 {
+			break
+		}
+		all = append(fresh, all...)
+		if len(older) < marketdata.MaxCandles { // העמוד לא היה מלא — הגענו לתחילת ההיסטוריה
+			break
+		}
+	}
+
+	s.mu.Lock()
+	s.deep[symbol] = cachedHistory{day: today, candles: all}
+	s.mu.Unlock()
+	return all, nil
+}
+
+func dayOf(datetime string) string {
+	if len(datetime) >= 10 {
+		return datetime[:10]
+	}
+	return datetime
+}
+
+// ---------- סימולציית עבר: "מה היה קורה אם היית מקשיב" ----------
+
+type backtestResponse struct {
+	OK     bool   `json:"ok"`
+	Symbol string `json:"symbol"`
+	Reason string `json:"reason,omitempty"`
+	backtest.Result
+}
+
+func (s *Server) handleBacktest(w http.ResponseWriter, r *http.Request) {
+	symbol := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("symbol")))
+	if symbol == "" || !s.md.HasKey() {
+		writeJSON(w, http.StatusOK, backtestResponse{OK: false, Symbol: symbol, Reason: "חסר סימול."})
+		return
+	}
+
+	today := time.Now().Format("2006-01-02")
+	s.mu.Lock()
+	if c, ok := s.bt[symbol]; ok && c.day == today {
+		s.mu.Unlock()
+		writeJSON(w, http.StatusOK, backtestResponse{OK: true, Symbol: symbol, Result: c.res})
+		return
+	}
+	s.mu.Unlock()
+
+	candles, _, err := s.historyRaw(symbol)
+	if err != nil {
+		writeJSON(w, http.StatusOK, backtestResponse{OK: false, Symbol: symbol, Reason: err.Error()})
+		return
+	}
+
+	res := backtest.Run(candles) // חישוב מקומי בלבד — אפס בקשות API
+	s.mu.Lock()
+	s.bt[symbol] = cachedBT{day: today, res: res}
+	s.mu.Unlock()
+	writeJSON(w, http.StatusOK, backtestResponse{OK: true, Symbol: symbol, Result: res})
+}
+
+// cachedCandles — עותק של חלון הנרות האחרון, מהמטמון בלבד (בלי לפנות ל-API) — ללולאת השידור.
 func (s *Server) cachedCandles(symbol string) ([]indicators.Candle, bool) {
 	today := time.Now().Format("2006-01-02")
 	s.mu.Lock()
@@ -475,11 +604,15 @@ func (s *Server) cachedCandles(symbol string) ([]indicators.Candle, bool) {
 	if !ok || c.day != today {
 		return nil, false
 	}
-	return cloneCandles(c.candles), true
+	return tailCopy(c.candles, indicators.Window), true
 }
 
-func cloneCandles(in []indicators.Candle) []indicators.Candle {
-	out := make([]indicators.Candle, len(in))
-	copy(out, in)
+// tailCopy — עותק בר-שינוי של N הנרות האחרונים. המטמון עצמו לעולם לא נוגעים בו.
+func tailCopy(in []indicators.Candle, n int) []indicators.Candle {
+	if n > len(in) {
+		n = len(in)
+	}
+	out := make([]indicators.Candle, n)
+	copy(out, in[len(in)-n:])
 	return out
 }

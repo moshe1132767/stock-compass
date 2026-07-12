@@ -103,15 +103,16 @@
     display:flex;gap:8px;box-shadow:var(--shadow);
     transition:transform .09s,box-shadow .15s;user-select:none;-webkit-touch-callout:none;touch-action:pan-y;}
   .card:active{transform:scale(.988);}
-  .card.dragging{opacity:.92;transform:scale(1.02);z-index:10;
-    box-shadow:0 14px 34px rgba(0,0,0,.22);cursor:grabbing;}
+  .card.dragging{z-index:20;transition:none;cursor:grabbing;border-color:var(--brand);
+    box-shadow:0 16px 36px rgba(0,0,0,.26);touch-action:none;}
+  :root[data-theme="light"] .card.dragging{box-shadow:0 16px 36px rgba(11,14,17,.18);}
   .card .strip{position:absolute;top:0;bottom:0;inset-inline-start:0;width:4px;}
   .cmain{flex:1;min-width:0;}
-  .cside{display:flex;flex-direction:column;align-items:center;justify-content:space-between;gap:8px;flex:none;}
+  .cside{display:flex;flex-direction:column;align-items:center;gap:8px;flex:none;}
   .mini{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;
     color:var(--dim);background:transparent;border:none;cursor:pointer;font-size:14px;}
   .mini:active{background:var(--surface2);color:var(--txt);}
-  .grip{cursor:grab;touch-action:none;}
+  .hint{color:var(--dim);font-size:11.5px;text-align:center;padding:6px 16px 0;}
 
   .card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
   .sym{font-weight:800;font-size:19px;letter-spacing:.2px;}
@@ -172,11 +173,45 @@
   .chart-lbl{position:absolute;top:-2px;inset-inline-start:0;font-size:12px;color:var(--muted);
     background:var(--surface2);border-radius:7px;padding:4px 8px;pointer-events:none;
     white-space:nowrap;direction:ltr;}
-  .ranges{display:flex;gap:5px;margin-top:12px;}
-  .rg{flex:1;background:transparent;border:none;color:var(--muted);font-size:13px;font-weight:700;
-    padding:9px 4px;border-radius:9px;cursor:pointer;min-height:40px;}
+  .ranges{display:flex;gap:3px;margin-top:12px;}
+  .rg{flex:1;min-width:0;background:transparent;border:none;color:var(--muted);font-size:11.5px;
+    font-weight:700;padding:9px 2px;border-radius:9px;cursor:pointer;min-height:40px;
+    white-space:nowrap;letter-spacing:-.2px;}
   .rg.active{background:var(--surface2);color:var(--txt);}
   .chart-msg{color:var(--dim);font-size:13px;text-align:center;padding:34px 10px;}
+
+  /* "מה היה קורה אם היית מקשיב" */
+  .bt-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;
+    margin:14px 16px;padding:16px 15px 14px;box-shadow:var(--shadow);}
+  .bt-head{font-weight:800;font-size:16.5px;letter-spacing:-.2px;}
+  .bt-sub{color:var(--muted);font-size:12px;margin-top:4px;line-height:1.55;}
+  .bt-tabs{display:flex;gap:4px;margin:13px 0;}
+  .bt-tab{flex:1;min-width:0;background:var(--surface2);border:none;color:var(--muted);
+    font-size:11.5px;font-weight:700;padding:9px 2px;border-radius:9px;cursor:pointer;
+    min-height:38px;white-space:nowrap;letter-spacing:-.2px;}
+  .bt-tab.active{background:var(--txt);color:var(--bg);}
+  .bt-tab:disabled{opacity:.3;cursor:default;}
+  .bt-grid{display:flex;gap:9px;}
+  .bt-col{flex:1;min-width:0;background:var(--surface2);border:1.5px solid transparent;
+    border-radius:13px;padding:12px 11px;}
+  .bt-col.w{border-color:var(--brand);background:var(--surface3);}
+  .bt-lbl{font-size:12px;color:var(--muted);font-weight:700;}
+  .bt-pct{font-size:23px;font-weight:800;letter-spacing:-.5px;margin-top:5px;
+    direction:ltr;text-align:right;}
+  .bt-val{font-size:11px;color:var(--muted);margin-top:3px;direction:ltr;text-align:right;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .bt-bar{height:5px;background:var(--surface3);border-radius:4px;margin-top:9px;overflow:hidden;}
+  .bt-col.w .bt-bar{background:var(--border2);}
+  .bt-bar b{display:block;height:100%;border-radius:4px;}
+  .bt-verdict{margin-top:12px;padding:11px 12px;border-radius:11px;font-size:13.5px;
+    font-weight:700;line-height:1.55;}
+  .bt-verdict.good{background:var(--up-wash);color:var(--up);}
+  .bt-verdict.bad{background:var(--down-wash);color:var(--down);}
+  .bt-verdict.tie{background:var(--neu-wash);color:var(--muted);}
+  .bt-stats{color:var(--dim);font-size:11.5px;margin-top:10px;line-height:1.8;}
+  .lt{direction:ltr;unicode-bidi:isolate;}   /* מספרים ואחוזים בתוך משפט בעברית */
+  .bt-note{color:var(--dim);font-size:11px;margin-top:12px;line-height:1.6;
+    border-top:1px solid var(--border);padding-top:10px;}
 
   /* score (number only — no gauge) */
   .score-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;
@@ -250,6 +285,7 @@
     <button class="tab" data-tab="stock">מניות</button>
   </div>
   <div class="live"><span class="dot off" id="liveDot"></span><span id="liveTxt">טוען…</span></div>
+  <div class="hint hidden" id="dragHint">לחיצה ארוכה על מניה — וגוררים אותה למעלה או למטה</div>
 
   <div id="errBox"></div>
   <div id="cards" class="list"></div>
@@ -280,13 +316,14 @@
   var REFRESH_OPEN=30000, REFRESH_CLOSED=300000;
   var state={ list:[], analyses:{}, tab:'all', busy:false, marketOpen:false,
               lastPrice:{}, detail:null, range:'1d', timer:null, sgTimer:null,
-              es:null, streaming:false };
+              es:null, streaming:false, bt:null, btRange:'1y' };
 
   var GROUPS=[
     {title:'מגמה וממוצעים', keys:['sma200','goldencross','momentum']},
     {title:'מומנטום ותנודתיות', keys:['macd','rsi','stoch','bollinger','obv']}
   ];
-  var RANGES=[{k:'1h',t:'שעה'},{k:'1d',t:'יום'},{k:'1w',t:'שבוע'},{k:'1m',t:'חודש'},{k:'1y',t:'שנה'}];
+  var RANGES=[{k:'1h',t:'שעה'},{k:'1d',t:'יום'},{k:'1w',t:'שבוע'},{k:'1m',t:'חודש'},
+              {k:'1y',t:'שנה'},{k:'5y',t:'5 שנים'},{k:'max',t:'מקס'}];
   var EXPL={
     sma200:'הקו המפריד בין מגמת עלייה לירידה ארוכת טווח. מחיר מעל הממוצע נחשב חיובי.',
     goldencross:'כשהממוצע הקצר (50) חוצה מעל הארוך (200) — סימן קלאסי לתחילת מגמת עלייה.',
@@ -322,6 +359,7 @@
   function apiAnalyze(sym){ return fetch('/api/analyze?symbol='+encodeURIComponent(sym)).then(function(r){return r.json();}); }
   function apiSearch(q){ return fetch('/api/search?q='+encodeURIComponent(q)).then(function(r){return r.json();}); }
   function apiSeries(sym,rng){ return fetch('/api/series?symbol='+encodeURIComponent(sym)+'&range='+rng).then(function(r){return r.json();}); }
+  function apiBacktest(sym){ return fetch('/api/backtest?symbol='+encodeURIComponent(sym)).then(function(r){return r.json();}); }
 
   // ---------- autocomplete ----------
   function hideSuggest(){ document.getElementById('suggest').classList.add('hidden'); }
@@ -371,7 +409,8 @@
   }
   function render(){
     var wrap=document.getElementById('cards'), empty=document.getElementById('emptyState');
-    var list=visible();
+    var list=visible(), hint=document.getElementById('dragHint');
+    if(hint) hint.classList.toggle('hidden', list.length<2);
     wrap.innerHTML='';
     if(state.list.length===0){ empty.classList.remove('hidden'); return; }
     empty.classList.add('hidden');
@@ -381,8 +420,7 @@
       var a=state.analyses[sym];
       var card=document.createElement('div');
       card.className='card'; card.setAttribute('data-sym', sym);
-      var side='<div class="cside"><button class="mini" data-del="'+esc(sym)+'" aria-label="הסר">✕</button>'+
-               '<div class="mini grip" data-grip aria-label="גרור">⣿</div></div>';
+      var side='<div class="cside"><button class="mini" data-del="'+esc(sym)+'" aria-label="הסר">✕</button></div>';
       if(!a){ card.innerHTML=skeleton(sym)+side; wrap.appendChild(card); return; }
       if(!a.ok){
         card.innerHTML='<div class="cmain"><div class="card-top"><div><div class="sym">'+esc(sym)+'</div>'+
@@ -419,11 +457,12 @@
     });
     Array.prototype.forEach.call(wrap.querySelectorAll('.card'), function(c){
       c.addEventListener('click', function(e){
-        if(e.target.closest('[data-del]')||e.target.closest('[data-grip]')) return;
+        if(justDragged) return;                 // בדיוק גררנו — לא לפתוח את המניה
+        if(e.target.closest('[data-del]')) return;
         openDetail(c.getAttribute('data-sym'));
       });
     });
-    initDrag(wrap);
+    initDrag();
     // ניקוי הבזק המחיר
     setTimeout(function(){
       Array.prototype.forEach.call(wrap.querySelectorAll('.flash-up,.flash-dn'), function(el){
@@ -432,46 +471,88 @@
     }, 700);
   }
 
-  // ---------- drag to reorder ----------
-  function initDrag(wrap){
-    Array.prototype.forEach.call(wrap.querySelectorAll('[data-grip]'), function(g){
-      g.addEventListener('pointerdown', function(ev){
-        ev.preventDefault();
-        var card=g.closest('.card');
-        var cards=Array.prototype.slice.call(wrap.querySelectorAll('.card'));
-        var startY=ev.clientY, startTop=card.getBoundingClientRect().top;
-        card.classList.add('dragging'); card.setPointerCapture&&card.setPointerCapture(ev.pointerId);
+  // ---------- שינוי סדר בלחיצה ארוכה ----------
+  // גלילה רגילה עובדת כרגיל. מחזיקים את האצבע ~0.4 שניות על מניה — היא "נתלשת"
+  // (עם רטט קצר) ואז גוררים אותה למעלה או למטה. תזוזה לפני כן = גלילה, לא גרירה.
+  var HOLD_MS=380, SLOP=10, EDGE=76, SCROLL_STEP=9;
+  var drag=null, holdTimer=null, cand=null, startX=0, startY=0, justDragged=false;
 
-        function move(e){
-          var dy=e.clientY-startY;
-          card.style.transform='translateY('+dy+'px) scale(1.02)';
-          var cy=startTop+dy+card.offsetHeight/2;
-          cards.forEach(function(o){
-            if(o===card) return;
-            var r=o.getBoundingClientRect();
-            if(cy>r.top && cy<r.bottom){
-              var ci=cards.indexOf(card), oi=cards.indexOf(o);
-              if(ci<oi) wrap.insertBefore(card, o.nextSibling); else wrap.insertBefore(card, o);
-              cards=Array.prototype.slice.call(wrap.querySelectorAll('.card'));
-              startY=e.clientY; startTop=card.getBoundingClientRect().top;
-              card.style.transform='scale(1.02)';
-            }
-          });
-        }
-        function up(){
-          document.removeEventListener('pointermove',move);
-          document.removeEventListener('pointerup',up);
-          card.classList.remove('dragging'); card.style.transform='';
-          var order=Array.prototype.map.call(wrap.querySelectorAll('.card'), function(c){ return c.getAttribute('data-sym'); });
-          // שומר את הסדר החדש, כולל פריטים שמוסתרים בלשונית הנוכחית
-          var rest=state.list.filter(function(s){ return order.indexOf(s)<0; });
-          state.list=order.concat(rest);
-          saveList();
-        }
-        document.addEventListener('pointermove',move);
-        document.addEventListener('pointerup',up);
-      });
+  function cancelHold(){ clearTimeout(holdTimer); holdTimer=null; cand=null; }
+
+  function beginDrag(card, y){
+    drag={ card:card, wrap:document.getElementById('cards'), baseY:y, lastY:y, dir:0 };
+    card.classList.add('dragging');
+    card.style.transform='scale(1.03)';
+    if(navigator.vibrate){ try{ navigator.vibrate(24); }catch(e){} }
+    requestAnimationFrame(edgeLoop);
+  }
+  function moveDrag(y){
+    drag.lastY=y;
+    drag.card.style.transform='translateY('+(y-drag.baseY)+'px) scale(1.03)';
+    reorder(y);
+    var h=window.innerHeight;
+    drag.dir = (y<EDGE) ? -1 : (y>h-EDGE ? 1 : 0);   // גרירה לקצה המסך — הרשימה נגללת לבד
+  }
+  function reorder(y){
+    var wrap=drag.wrap, card=drag.card, cards=wrap.querySelectorAll('.card');
+    for(var i=0;i<cards.length;i++){
+      var o=cards[i];
+      if(o===card) continue;
+      var r=o.getBoundingClientRect(), mid=r.top+r.height/2;
+      var below=(card.compareDocumentPosition(o) & Node.DOCUMENT_POSITION_FOLLOWING);
+      if(below && y>mid){ wrap.insertBefore(card, o.nextSibling); rebase(y); return; }
+      if(!below && y<mid){ wrap.insertBefore(card, o); rebase(y); return; }
+    }
+  }
+  function rebase(y){ drag.baseY=y; drag.card.style.transform='scale(1.03)'; }
+  function edgeLoop(){
+    if(!drag) return;
+    if(drag.dir){ window.scrollBy(0, drag.dir*SCROLL_STEP); reorder(drag.lastY); }
+    requestAnimationFrame(edgeLoop);
+  }
+  function endDrag(){
+    if(!drag) return;
+    var wrap=drag.wrap, card=drag.card;
+    card.classList.remove('dragging'); card.style.transform='';
+    drag=null;
+    justDragged=true; setTimeout(function(){ justDragged=false; }, 400);
+    var order=Array.prototype.map.call(wrap.querySelectorAll('.card'), function(c){
+      return c.getAttribute('data-sym');
     });
+    // שומר את הסדר החדש, כולל פריטים שמוסתרים בלשונית הנוכחית
+    var rest=state.list.filter(function(s){ return order.indexOf(s)<0; });
+    state.list=order.concat(rest);
+    saveList();
+  }
+
+  function initDrag(){
+    var wrap=document.getElementById('cards');
+    if(wrap.__dragWired) return;   // הכרטיסים מצוירים מחדש, המאזינים נרשמים פעם אחת
+    wrap.__dragWired=true;
+
+    wrap.addEventListener('pointerdown', function(e){
+      if(drag || (e.pointerType==='mouse' && e.button!==0)) return;
+      if(e.target.closest('[data-del]')) return;
+      var card=e.target.closest('.card');
+      if(!card || !card.getAttribute('data-sym') || state.list.length<2) return;
+      cand=card; startX=e.clientX; startY=e.clientY;
+      clearTimeout(holdTimer);
+      holdTimer=setTimeout(function(){
+        if(cand) beginDrag(cand, startY);
+        cand=null;
+      }, HOLD_MS);
+    });
+
+    document.addEventListener('pointermove', function(e){
+      if(drag){ moveDrag(e.clientY); return; }
+      if(!cand) return;
+      if(Math.abs(e.clientY-startY)>SLOP || Math.abs(e.clientX-startX)>SLOP) cancelHold(); // זו גלילה
+    });
+    document.addEventListener('pointerup', function(){ cancelHold(); endDrag(); });
+    document.addEventListener('pointercancel', function(){ cancelHold(); endDrag(); });
+    // בזמן גרירה הדף עצמו לא זז — רק הכרטיס
+    document.addEventListener('touchmove', function(e){ if(drag) e.preventDefault(); }, {passive:false});
+    window.addEventListener('scroll', function(){ if(!drag) cancelHold(); }, {passive:true});
   }
 
   // ---------- chart ----------
@@ -548,6 +629,99 @@
     });
   }
 
+  // ---------- "מה היה קורה אם היית מקשיב" ----------
+  function money(v){ return '$'+Math.round(v).toLocaleString('en-US'); }
+  function pctTxt(v){ return (v>=0?'+':'')+v.toFixed(1)+'%'; }
+  function upDown(v){ return v>=0 ? 'var(--up)' : 'var(--down)'; }
+  function lt(x){ return '<span class="lt">'+x+'</span>'; }   // מספר בתוך משפט עברי
+
+  function btHTML(){
+    return '<div class="bt-card">'+
+      '<div class="bt-head">מה היה קורה אם היית מקשיב?</div>'+
+      '<div class="bt-sub">הרצנו את אותם 8 אינדיקטורים על כל יום בעבר: קונים כשההמלצה הפכה לקנייה, '+
+        'מוכרים כשהיא הפכה למכירה — ומשווים למי שפשוט קנה והחזיק.</div>'+
+      '<div class="bt-tabs" id="btTabs"></div>'+
+      '<div id="btBox"></div>'+
+      '<div class="bt-note">הסימולציה מבוססת על מחירי הסגירה בפועל, בלי עמלות ובלי מס. '+
+        'ביצועי עבר אינם מבטיחים תוצאה דומה בעתיד.</div>'+
+    '</div>';
+  }
+  function btRender(){
+    var tabs=document.getElementById('btTabs'), box=document.getElementById('btBox');
+    if(!tabs||!box) return;
+    var r=state.bt;
+    if(!r){ tabs.innerHTML=''; box.innerHTML='<div class="sk" style="height:160px"></div>'; return; }
+    if(!r.ok || !r.periods){
+      tabs.innerHTML='';
+      box.innerHTML='<div class="chart-msg">'+esc(r.reason||'לא הצלחנו לחשב.')+'</div>';
+      return;
+    }
+
+    tabs.innerHTML=r.periods.map(function(p){
+      return '<button class="bt-tab'+(p.key===state.btRange?' active':'')+'" data-bt="'+esc(p.key)+'"'+
+        (p.available?'':' disabled')+'>'+esc(p.label)+'</button>';
+    }).join('');
+    Array.prototype.forEach.call(tabs.querySelectorAll('[data-bt]'), function(b){
+      b.addEventListener('click', function(){ state.btRange=b.getAttribute('data-bt'); btRender(); });
+    });
+
+    var p=null;
+    r.periods.forEach(function(x){ if(x.key===state.btRange) p=x; });
+    if(!p) p=r.periods[0];
+    if(!p.available){
+      box.innerHTML='<div class="chart-msg">אין מספיק היסטוריה למניה הזו כדי לבדוק '+esc(p.label)+' אחורה.</div>';
+      return;
+    }
+
+    var diff=p.strategy-p.buyHold;
+    var tie=Math.abs(diff)<0.05, win=(!tie && diff>0);
+    var mx=Math.max(Math.abs(p.strategy), Math.abs(p.buyHold), 1);
+    function bar(v){ return Math.max(4, Math.abs(v)/mx*100); }
+
+    var gap=lt(Math.abs(diff).toFixed(1)+'%');
+    var vcls, verdict;
+    if(tie){ vcls='tie'; verdict='יצא בדיוק אותו דבר — ההמלצה הייתה להחזיק לאורך כל התקופה.'; }
+    else if(win){ vcls='good'; verdict='ההמלצות הרוויחו '+gap+' יותר מאשר פשוט לקנות ולהחזיק.'; }
+    else { vcls='bad'; verdict='עדיף היה פשוט לקנות ולהחזיק — ההמלצות פיגרו ב-'+gap+'.'; }
+
+    var acts;
+    if(p.trades===0)      acts='בלי אף פעולה — ההמלצה לא השתנתה בכל התקופה';
+    else if(p.trades===1) acts='פעולת קנייה/מכירה אחת';
+    else                  acts=lt(p.trades)+' פעולות קנייה/מכירה';
+
+    box.innerHTML=
+      '<div class="bt-grid">'+
+        '<div class="bt-col'+(win?' w':'')+'">'+
+          '<div class="bt-lbl">לפי ההמלצות</div>'+
+          '<div class="bt-pct num" style="color:'+upDown(p.strategy)+'">'+pctTxt(p.strategy)+'</div>'+
+          '<div class="bt-val num">'+money(r.start)+' → '+money(p.stratVal)+'</div>'+
+          '<div class="bt-bar"><b style="width:'+bar(p.strategy)+'%;background:'+upDown(p.strategy)+'"></b></div>'+
+        '</div>'+
+        '<div class="bt-col'+((!win&&!tie)?' w':'')+'">'+
+          '<div class="bt-lbl">קנייה והחזקה</div>'+
+          '<div class="bt-pct num" style="color:'+upDown(p.buyHold)+'">'+pctTxt(p.buyHold)+'</div>'+
+          '<div class="bt-val num">'+money(r.start)+' → '+money(p.holdVal)+'</div>'+
+          '<div class="bt-bar"><b style="width:'+bar(p.buyHold)+'%;background:'+upDown(p.buyHold)+'"></b></div>'+
+        '</div>'+
+      '</div>'+
+      '<div class="bt-verdict '+vcls+'">'+verdict+'</div>'+
+      '<div class="bt-stats">'+
+        acts+' · '+lt(Math.round(p.timeIn)+'%')+' מהזמן היית בתוך השוק<br>'+
+        'הירידה הכי גדולה בדרך: '+lt(p.maxDD.toFixed(0)+'%')+
+        ' (בקנייה והחזקה: '+lt(p.holdDD.toFixed(0)+'%')+')'+
+      '</div>';
+  }
+  function loadBacktest(sym){
+    state.bt=null; btRender();
+    apiBacktest(sym).then(function(r){
+      if(state.detail!==sym) return;
+      state.bt=r; btRender();
+    }).catch(function(){
+      if(state.detail!==sym) return;
+      state.bt={ok:false, reason:'שגיאה בחישוב.'}; btRender();
+    });
+  }
+
   // ---------- detail ----------
   function indRow(i){
     var sc=i.signal==='buy'?'sig-buy':i.signal==='sell'?'sig-sell':'sig-neu';
@@ -596,6 +770,7 @@
           '<div class="summary"><span class="scnt b num">▲ '+a.agreement.buy+' <small>בעד</small></span>'+
             '<span class="scnt n num">'+a.agreement.neutral+' <small>ניטרלי</small></span>'+
             '<span class="scnt s num">▼ '+a.agreement.sell+' <small>נגד</small></span></div></div></div>'+
+      btHTML()+
       sections+
       '<div class="disclaimer">ניתוח טכני ממוחשב למטרות מידע בלבד — אינו ייעוץ השקעות. החלטות ההשקעה באחריותך.</div>';
 
@@ -607,6 +782,7 @@
     });
     document.getElementById('backBtn').addEventListener('click', function(){ history.back(); });
     loadChart(sym, state.range);
+    loadBacktest(sym);
   }
   function closeDetail(){
     state.detail=null;
