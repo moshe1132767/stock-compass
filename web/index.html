@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#0e1420">
+<title>מצפן המניות</title>
+<link rel="manifest" href='data:application/manifest+json,{"name":"מצפן המניות","short_name":"מצפן","start_url":".","display":"standalone","background_color":"%230e1420","theme_color":"%230e1420","icons":[]}'>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  :root{
+    --bg:#0e1420; --card:#171f2e; --card2:#1e2839; --line:#2a3547;
+    --txt:#e8edf5; --dim:#93a1b5; --dim2:#63718a;
+    --buy:#2ecc71; --sell:#ff5b6a; --hold:#f1c40f; --accent:#3d9bff;
+  }
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;}
+  body{max-width:640px;margin:0 auto;min-height:100vh;padding-bottom:40px;}
+  .hidden{display:none !important;}
+
+  header{position:sticky;top:0;z-index:20;background:rgba(14,20,32,.92);
+    backdrop-filter:blur(10px);border-bottom:1px solid var(--line);
+    padding:14px 16px;display:flex;align-items:center;justify-content:space-between;}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:800;font-size:19px;letter-spacing:-.3px;}
+  .brand .logo{width:26px;height:26px;}
+  .icon-btn{background:var(--card2);border:1px solid var(--line);color:var(--txt);
+    width:40px;height:40px;border-radius:11px;font-size:19px;display:grid;place-items:center;cursor:pointer;}
+  .icon-btn:active{transform:scale(.93);}
+
+  .addbar{display:flex;gap:8px;padding:14px 16px 6px;}
+  .addbar input{flex:1;background:var(--card);border:1px solid var(--line);color:var(--txt);
+    border-radius:12px;padding:13px 15px;font-size:16px;outline:none;}
+  .addbar input:focus{border-color:var(--accent);}
+  .addbar button{background:var(--accent);border:none;color:#fff;font-weight:700;
+    border-radius:12px;padding:0 18px;font-size:15px;cursor:pointer;}
+  .addbar button:active{transform:scale(.95);}
+  .hint{color:var(--dim2);font-size:12.5px;padding:2px 18px 10px;}
+
+  .list{padding:6px 12px;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;
+    padding:14px 15px;margin:9px 2px;cursor:pointer;position:relative;overflow:hidden;transition:transform .08s;}
+  .card:active{transform:scale(.985);}
+  .card .strip{position:absolute;top:0;bottom:0;right:0;width:5px;}
+  .card-top{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+  .sym{font-weight:800;font-size:20px;letter-spacing:.3px;}
+  .cname{color:var(--dim);font-size:12.5px;margin-top:1px;max-width:150px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .price{text-align:left;}
+  .price .p{font-weight:700;font-size:17px;}
+  .price .ch{font-size:12.5px;margin-top:1px;}
+  .up{color:var(--buy);} .down{color:var(--sell);}
+
+  .reco-row{display:flex;align-items:center;justify-content:space-between;margin-top:12px;gap:12px;}
+  .reco-badge{display:flex;align-items:center;gap:9px;}
+  .score-pill{min-width:52px;height:40px;border-radius:11px;display:grid;place-items:center;
+    font-weight:800;font-size:19px;color:#0e1420;}
+  .reco-txt{font-weight:700;font-size:15.5px;}
+  .reco-sub{color:var(--dim);font-size:11.5px;margin-top:1px;}
+  .dots{display:flex;gap:5px;flex-wrap:wrap;}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--dim2);}
+  .dot.buy{background:var(--buy);} .dot.sell{background:var(--sell);} .dot.neu{background:#55617a;}
+
+  .loading-mini{color:var(--dim2);font-size:13px;padding:10px 4px 2px;}
+  .empty{text-align:center;color:var(--dim);padding:50px 30px;}
+  .empty .big{font-size:44px;margin-bottom:10px;}
+  .err{background:#2a1416;border:1px solid #c0392b;color:#ffb3ba;
+    border-radius:12px;padding:11px 14px;margin:10px 14px;font-size:13.5px;}
+
+  .detail{padding:0 0 30px;}
+  .back{display:flex;align-items:center;gap:7px;color:var(--accent);font-weight:600;
+    font-size:15px;padding:14px 16px;cursor:pointer;}
+  .d-head{padding:4px 18px 6px;}
+  .d-sym{font-size:30px;font-weight:800;letter-spacing:.5px;}
+  .d-name{color:var(--dim);font-size:14px;margin-top:2px;}
+  .d-price{display:flex;align-items:baseline;gap:12px;margin-top:10px;}
+  .d-price .p{font-size:28px;font-weight:800;}
+  .d-price .ch{font-size:16px;font-weight:600;}
+
+  .gauge-wrap{display:flex;align-items:center;gap:18px;background:var(--card);
+    border:1px solid var(--line);border-radius:18px;margin:16px 14px;padding:18px;}
+  .gauge{position:relative;width:120px;height:120px;flex:none;}
+  .gauge .num{position:absolute;inset:0;display:grid;place-items:center;font-size:30px;font-weight:800;}
+  .gauge .num small{display:block;font-size:11px;color:var(--dim);font-weight:600;text-align:center;margin-top:-4px;}
+  .gsummary .rtitle{font-size:22px;font-weight:800;margin-bottom:6px;}
+  .gsummary .rmeta{color:var(--dim);font-size:13.5px;line-height:1.7;}
+  .agree{display:flex;gap:6px;margin-top:9px;}
+  .agree span{font-size:12px;padding:3px 9px;border-radius:20px;font-weight:700;}
+  .agree .b{background:rgba(46,204,113,.15);color:var(--buy);}
+  .agree .n{background:rgba(85,97,122,.22);color:var(--dim);}
+  .agree .s{background:rgba(255,91,106,.15);color:var(--sell);}
+
+  .sec-title{font-size:13px;color:var(--dim2);font-weight:700;padding:8px 20px 4px;letter-spacing:.3px;}
+  .ind{background:var(--card);border:1px solid var(--line);border-radius:14px;margin:8px 14px;padding:13px 15px;}
+  .ind-top{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+  .ind-name{font-weight:700;font-size:15px;display:flex;align-items:center;gap:8px;}
+  .ind-sig{font-size:12.5px;font-weight:800;padding:4px 10px;border-radius:8px;white-space:nowrap;}
+  .sig-buy{background:rgba(46,204,113,.16);color:var(--buy);}
+  .sig-sell{background:rgba(255,91,106,.16);color:var(--sell);}
+  .sig-neu{background:rgba(85,97,122,.22);color:var(--dim);}
+  .ind-detail{color:var(--txt);font-size:13.5px;margin-top:7px;}
+  .ind-expl{color:var(--dim2);font-size:12px;margin-top:5px;line-height:1.6;}
+  .wbar{height:5px;background:var(--line);border-radius:4px;margin-top:9px;overflow:hidden;position:relative;}
+  .wbar i{position:absolute;top:0;bottom:0;left:50%;width:1px;background:var(--dim2);}
+  .wbar b{position:absolute;top:0;bottom:0;border-radius:4px;}
+  .disclaimer{color:var(--dim2);font-size:11.5px;line-height:1.7;text-align:center;padding:20px 26px 6px;}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 24 24" fill="none" stroke="#3d9bff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.2"/><polygon points="15.5,8.5 10.8,10.8 8.5,15.5 13.2,13.2" fill="#3d9bff" stroke="none"/></svg>
+    מצפן המניות
+  </div>
+  <button class="icon-btn" id="refreshBtn" title="רענון">⟳</button>
+</header>
+
+<div id="listView">
+  <div class="addbar">
+    <input id="symInput" placeholder="הוסף מניה (לדוגמה: AAPL, MSFT, NVDA)" autocomplete="off" autocapitalize="characters">
+    <button id="addBtn">הוסף</button>
+  </div>
+  <div class="hint">הקלד סימול מניה אמריקאית (באנגלית) ולחץ הוסף. הנתונים מתעדכנים בכל פתיחה.</div>
+  <div id="errBox"></div>
+  <div id="loadingMini" class="loading-mini hidden"></div>
+  <div id="cards" class="list"></div>
+  <div id="emptyState" class="empty hidden">
+    <div class="big">📈</div>
+    <div>הרשימה ריקה.<br>הוסף מניה למעלה כדי לקבל את ההמלצה הראשונה.</div>
+  </div>
+  <div class="disclaimer">
+    האפליקציה מספקת ניתוח טכני ממוחשב למטרות מידע והשכלה בלבד, ואינה מהווה ייעוץ השקעות או המלצה לפעולה.
+    כל החלטת השקעה היא באחריותך. השקעה בשוק ההון כרוכה בסיכון להפסד.
+  </div>
+</div>
+
+<div id="detailView" class="detail hidden"></div>
+
+<script>
+(function(){
+  'use strict';
+  var LS_LIST='mm_watchlist';
+  var STARTERS=['AAPL','MSFT','NVDA'];
+  var state={ list:[], analyses:{} };
+
+  function loadList(){ try{ state.list=JSON.parse(localStorage.getItem(LS_LIST)||'[]'); }catch(e){ state.list=[]; } }
+  function saveList(){ localStorage.setItem(LS_LIST, JSON.stringify(state.list)); }
+
+  function scoreColor(s){
+    if(s>=70) return '#2ecc71';
+    if(s>=55) return '#7bd88a';
+    if(s>45)  return '#f1c40f';
+    if(s>30)  return '#ff9f6a';
+    return '#ff5b6a';
+  }
+
+  var EXPL={
+    sma200:'הקו המפריד בין מגמת עלייה לירידה ארוכת טווח. מחיר מעל הממוצע נחשב חיובי.',
+    goldencross:'כשהממוצע הקצר (50) עובר מעל הארוך (200) — סימן קלאסי למגמת עלייה שמתחילה.',
+    momentum:'מניות שעלו בשנה האחרונה נוטות סטטיסטית להמשיך לעלות. האינדיקטור עם הביסוס האקדמי החזק ביותר.',
+    macd:'מזהה מתי המומנטום של המניה מתהפך — מירידה לעלייה או להפך.',
+    rsi:'מודד אם המניה "התחממה" מדי (מעל 70) או "התקררה" מדי (מתחת 30) לטווח הקצר.',
+    stoch:'משווה את המחיר לטווח האחרון. טוב לזהות קצוות, אך במגמה חזקה יכול לתת איתות מוקדם.',
+    bollinger:'רצועה סביב המחיר שמתרחבת לפי התנודתיות. חריגה מהרצועה = מהלך קיצוני.',
+    obv:'בודק אם כסף אמיתי נכנס למניה (נפח קונים) או יוצא ממנה.'
+  };
+
+  // ---------- שליפה מהשרת שלנו ----------
+  function analyzeSymbol(sym){
+    return fetch('/api/analyze?symbol='+encodeURIComponent(sym))
+      .then(function(r){ return r.json(); });
+  }
+
+  // ---------- רשימה ----------
+  function render(){
+    var cards=document.getElementById('cards');
+    var empty=document.getElementById('emptyState');
+    cards.innerHTML='';
+    if(state.list.length===0){ empty.classList.remove('hidden'); return; }
+    empty.classList.add('hidden');
+
+    state.list.forEach(function(sym){
+      var a=state.analyses[sym];
+      var card=document.createElement('div');
+      card.className='card';
+      if(!a){
+        card.innerHTML='<div class="card-top"><div><div class="sym">'+sym+'</div><div class="cname">טוען…</div></div></div>';
+        cards.appendChild(card); return;
+      }
+      if(!a.ok){
+        card.innerHTML='<div class="card-top"><div><div class="sym">'+sym+'</div>'+
+          '<div class="cname" style="color:var(--sell)">'+(a.reason||'שגיאה')+'</div></div>'+
+          '<button class="icon-btn" data-del="'+sym+'">🗑</button></div>';
+        cards.appendChild(card); return;
+      }
+      var col=scoreColor(a.score100);
+      var chCls=a.change>=0?'up':'down', chSign=a.change>=0?'+':'';
+      var dots='';
+      a.indicators.forEach(function(i){
+        var c=i.signal==='buy'?'buy':i.signal==='sell'?'sell':'neu';
+        dots+='<span class="dot '+c+'"></span>';
+      });
+      card.innerHTML=
+        '<div class="strip" style="background:'+col+'"></div>'+
+        '<div class="card-top">'+
+          '<div><div class="sym">'+a.symbol+'</div><div class="cname">'+(a.name||'')+'</div></div>'+
+          '<div class="price"><div class="p">$'+a.price.toFixed(2)+'</div>'+
+            '<div class="ch '+chCls+'">'+chSign+a.change.toFixed(2)+' ('+chSign+a.changePct.toFixed(2)+'%)</div></div>'+
+        '</div>'+
+        '<div class="reco-row">'+
+          '<div class="reco-badge">'+
+            '<div class="score-pill" style="background:'+col+'">'+a.score100+'</div>'+
+            '<div><div class="reco-txt">'+a.recommendation+'</div>'+
+            '<div class="reco-sub">'+a.agreement.buy+' בעד · '+a.agreement.sell+' נגד</div></div>'+
+          '</div>'+
+          '<div class="dots">'+dots+'</div>'+
+        '</div>';
+      card.addEventListener('click', function(e){
+        if(e.target.getAttribute('data-del')) return;
+        showDetail(sym);
+      });
+      cards.appendChild(card);
+    });
+    Array.prototype.forEach.call(cards.querySelectorAll('[data-del]'), function(b){
+      b.addEventListener('click', function(e){ e.stopPropagation(); removeSymbol(b.getAttribute('data-del')); });
+    });
+  }
+
+  // ---------- פירוט ----------
+  function gaugeSVG(score, color){
+    var r=52, c=2*Math.PI*r, off=c*(1-score/100);
+    return '<svg width="120" height="120" viewBox="0 0 120 120">'+
+      '<circle cx="60" cy="60" r="'+r+'" fill="none" stroke="#2a3547" stroke-width="11"/>'+
+      '<circle cx="60" cy="60" r="'+r+'" fill="none" stroke="'+color+'" stroke-width="11" '+
+        'stroke-linecap="round" stroke-dasharray="'+c+'" stroke-dashoffset="'+off+'" transform="rotate(-90 60 60)"/></svg>';
+  }
+  function showDetail(sym){
+    var a=state.analyses[sym];
+    if(!a||!a.ok) return;
+    var col=scoreColor(a.score100);
+    var chCls=a.change>=0?'up':'down', chSign=a.change>=0?'+':'';
+    var inds='';
+    a.indicators.forEach(function(i){
+      var sc=i.signal==='buy'?'sig-buy':i.signal==='sell'?'sig-sell':'sig-neu';
+      var st=i.signal==='buy'?'קנייה':i.signal==='sell'?'מכירה':'ניטרלי';
+      var arrow=i.signal==='buy'?'▲':i.signal==='sell'?'▼':'■';
+      var bstyle=i.score>=0
+        ? 'left:50%;width:'+(i.score*50)+'%;background:var(--buy);'
+        : 'right:50%;width:'+(-i.score*50)+'%;background:var(--sell);';
+      inds+=
+        '<div class="ind">'+
+          '<div class="ind-top"><div class="ind-name">'+arrow+' '+i.name+'</div>'+
+            '<div class="ind-sig '+sc+'">'+st+'</div></div>'+
+          '<div class="ind-detail">'+i.detail+'</div>'+
+          '<div class="ind-expl">'+(EXPL[i.key]||'')+'</div>'+
+          '<div class="wbar"><i></i><b style="'+bstyle+'"></b></div>'+
+        '</div>';
+    });
+    var d=document.getElementById('detailView');
+    d.innerHTML=
+      '<div class="back" id="backBtn">‹ חזרה לרשימה</div>'+
+      '<div class="d-head"><div class="d-sym">'+a.symbol+'</div><div class="d-name">'+(a.name||'')+'</div>'+
+        '<div class="d-price"><div class="p">$'+a.price.toFixed(2)+'</div>'+
+          '<div class="ch '+chCls+'">'+chSign+a.change.toFixed(2)+' ('+chSign+a.changePct.toFixed(2)+'%)</div></div></div>'+
+      '<div class="gauge-wrap"><div class="gauge">'+gaugeSVG(a.score100,col)+
+          '<div class="num">'+a.score100+'<small>מתוך 100</small></div></div>'+
+        '<div class="gsummary"><div class="rtitle" style="color:'+col+'">'+a.recommendation+'</div>'+
+          '<div class="rmeta">ציון משוקלל מ-'+a.agreement.total+' אינדיקטורים.</div>'+
+          '<div class="agree"><span class="b">'+a.agreement.buy+' בעד</span>'+
+            '<span class="n">'+a.agreement.neutral+' ניטרלי</span>'+
+            '<span class="s">'+a.agreement.sell+' נגד</span></div></div></div>'+
+      '<div class="sec-title">פירוט האינדיקטורים</div>'+inds+
+      '<div class="disclaimer">ניתוח טכני ממוחשב למטרות מידע בלבד — לא ייעוץ השקעות. החלטות ההשקעה באחריותך.</div>';
+    document.getElementById('listView').classList.add('hidden');
+    d.classList.remove('hidden');
+    document.getElementById('backBtn').addEventListener('click', function(){
+      d.classList.add('hidden');
+      document.getElementById('listView').classList.remove('hidden');
+      window.scrollTo(0,0);
+    });
+    window.scrollTo(0,0);
+  }
+
+  // ---------- פעולות ----------
+  function showErr(msg){
+    var e=document.getElementById('errBox');
+    e.innerHTML='<div class="err">'+msg+'</div>';
+    setTimeout(function(){ e.innerHTML=''; }, 6000);
+  }
+  function setLoading(txt){
+    var l=document.getElementById('loadingMini');
+    if(txt){ l.textContent=txt; l.classList.remove('hidden'); } else l.classList.add('hidden');
+  }
+  function removeSymbol(sym){
+    state.list=state.list.filter(function(s){return s!==sym;});
+    delete state.analyses[sym];
+    saveList(); render();
+  }
+  function addSymbol(){
+    var inp=document.getElementById('symInput');
+    var sym=(inp.value||'').trim().toUpperCase();
+    if(!sym) return;
+    if(state.list.indexOf(sym)>=0){ inp.value=''; return; }
+    state.list.push(sym); saveList(); inp.value=''; render();
+    loadOne(sym);
+  }
+  function loadOne(sym){
+    return analyzeSymbol(sym).then(function(res){
+      state.analyses[sym]=res; render();
+    }).catch(function(err){
+      state.analyses[sym]={ok:false, symbol:sym, reason:(err&&err.message)||'שגיאה בטעינה'};
+      render();
+    });
+  }
+  function loadAll(){
+    if(state.list.length===0){ render(); return; }
+    var i=0;
+    function next(){
+      if(i>=state.list.length){ setLoading(''); return; }
+      var sym=state.list[i]; i++;
+      setLoading('טוען '+i+' מתוך '+state.list.length+'…');
+      loadOne(sym).then(function(){ setTimeout(next, 350); });
+    }
+    next();
+  }
+
+  document.getElementById('addBtn').addEventListener('click', addSymbol);
+  document.getElementById('symInput').addEventListener('keydown', function(e){ if(e.key==='Enter') addSymbol(); });
+  document.getElementById('refreshBtn').addEventListener('click', function(){
+    state.analyses={}; render(); loadAll();
+  });
+
+  loadList();
+  if(state.list.length===0){ state.list=STARTERS.slice(); saveList(); }
+  render(); loadAll();
+})();
+</script>
+</body>
+</html>

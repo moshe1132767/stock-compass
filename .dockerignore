@@ -1,0 +1,7 @@
+.git
+node_modules
+legacy-static
+site
+k8s
+*.md
+.dockerignore

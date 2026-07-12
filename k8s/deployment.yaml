@@ -1,0 +1,92 @@
+# מצפן המניות — פריסה לקלאסטר (namespace: default, כמו ReceiptKeeper)
+# החלה:  kubectl apply -f k8s/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stock-compass
+  labels:
+    app: stock-compass
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stock-compass
+  template:
+    metadata:
+      labels:
+        app: stock-compass
+    spec:
+      imagePullSecrets:
+        - name: ghcr-secret
+      containers:
+        - name: container-0
+          image: ghcr.io/moshe1132767/stock-compass:v1.1
+          ports:
+            - containerPort: 3003
+          env:
+            - name: TWELVEDATA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: stock-compass-secrets
+                  key: TWELVEDATA_API_KEY
+            - name: FINNHUB_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: stock-compass-secrets
+                  key: FINNHUB_API_KEY
+                  optional: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 3003
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 3003
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "32Mi"
+            limits:
+              cpu: "300m"
+              memory: "128Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stock-compass
+spec:
+  selector:
+    app: stock-compass
+  ports:
+    - port: 80
+      targetPort: 3003
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: stock-compass
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: stocks.185.209.229.180.sslip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: stock-compass
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - stocks.185.209.229.180.sslip.io
+      secretName: stock-compass-tls
