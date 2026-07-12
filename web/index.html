@@ -279,7 +279,8 @@
   var STARTERS=['AAPL','MSFT','NVDA'];
   var REFRESH_OPEN=30000, REFRESH_CLOSED=300000;
   var state={ list:[], analyses:{}, tab:'all', busy:false, marketOpen:false,
-              lastPrice:{}, detail:null, range:'1d', timer:null, sgTimer:null };
+              lastPrice:{}, detail:null, range:'1d', timer:null, sgTimer:null,
+              es:null, streaming:false };
 
   var GROUPS=[
     {title:'מגמה וממוצעים', keys:['sma200','goldencross','momentum']},
@@ -625,7 +626,7 @@
   function removeSymbol(sym){
     state.list=state.list.filter(function(s){return s!==sym;});
     delete state.analyses[sym]; delete state.lastPrice[sym];
-    saveList(); render();
+    saveList(); render(); connectStream();
   }
   function addSymbol(sym){
     var inp=document.getElementById('symInput');
@@ -633,7 +634,8 @@
     if(!sym) return;
     hideSuggest(); inp.value='';
     if(state.list.indexOf(sym)>=0) return;
-    state.list.push(sym); saveList(); render(); loadOne(sym);
+    state.list.push(sym); saveList(); render();
+    loadOne(sym).then(connectStream);
   }
   function loadOne(sym){
     return apiAnalyze(sym).then(function(res){
@@ -660,15 +662,93 @@
   function updateLive(){
     var dot=document.getElementById('liveDot'), txt=document.getElementById('liveTxt');
     if(!dot) return;
-    if(state.marketOpen){ dot.className='dot on'; txt.textContent='השוק פתוח · מתעדכן אוטומטית כל 30 שניות'; }
-    else { dot.className='dot off'; txt.textContent='השוק סגור · הנתונים מהסגירה האחרונה'; }
+    if(!state.marketOpen){ dot.className='dot off'; txt.textContent='השוק סגור · הנתונים מהסגירה האחרונה'; return; }
+    dot.className='dot on';
+    txt.textContent = state.streaming
+      ? 'בזמן אמת · מתעדכן בכל עסקה'
+      : 'השוק פתוח · מתעדכן אוטומטית כל 30 שניות';
   }
   function scheduleRefresh(){
     clearTimeout(state.timer);
+    // בזרם חי אין צורך לשאול כל 30 שניות — העדכונים נדחפים אלינו
+    var iv = state.streaming ? REFRESH_CLOSED : (state.marketOpen ? REFRESH_OPEN : REFRESH_CLOSED);
     state.timer=setTimeout(function(){
       if(document.visibilityState==='visible') refreshAll();
       scheduleRefresh();
-    }, state.marketOpen ? REFRESH_OPEN : REFRESH_CLOSED);
+    }, iv);
+  }
+
+  // ---------- זרם חי (בזמן אמת) ----------
+  function cardOf(sym){
+    var cards=document.querySelectorAll('.card');
+    for(var i=0;i<cards.length;i++){ if(cards[i].getAttribute('data-sym')===sym) return cards[i]; }
+    return null;
+  }
+  function flash(el, upward){
+    if(!el) return;
+    el.classList.remove('flash-up','flash-dn'); void el.offsetWidth;
+    el.classList.add(upward?'flash-up':'flash-dn');
+    setTimeout(function(){ el.classList.remove('flash-up','flash-dn'); }, 700);
+  }
+  function chTxt(a){
+    var sg=a.change>=0?'+':'', arr=a.change>=0?'▲':'▼';
+    return arr+' '+sg+a.change.toFixed(2)+' ('+sg+a.changePct.toFixed(2)+'%)';
+  }
+  function applyLive(u){
+    var a=state.analyses[u.symbol];
+    if(!a||!a.ok) return;
+    var old=a.price;
+    a.price=u.price;
+    if(u.prevClose) a.prevClose=u.prevClose;
+    a.change=u.change; a.changePct=u.changePct;
+    if(u.score100){ a.score100=u.score100; a.recommendation=u.recommendation; a.recoKey=u.recoKey; }
+    if(u.agreement) a.agreement=u.agreement;
+    state.lastPrice[u.symbol]=a.price;
+
+    var col=band(a.score100);
+    var card=cardOf(u.symbol);
+    if(card){
+      var p=card.querySelector('.price .p'), ch=card.querySelector('.price .ch');
+      var pill=card.querySelector('.score-pill'), reco=card.querySelector('.reco-txt');
+      var strip=card.querySelector('.strip'), cnts=card.querySelectorAll('.cnt');
+      if(p){ p.textContent='$'+a.price.toFixed(2); if(old!=null&&old!==a.price) flash(p, a.price>old); }
+      if(ch){ ch.textContent=chTxt(a); ch.className='ch num '+(a.change>=0?'up':'down'); }
+      if(pill){ pill.textContent=a.score100; pill.style.background=col; }
+      if(reco){ reco.textContent=a.recommendation; reco.style.color=col; }
+      if(strip){ strip.style.background=col; }
+      if(cnts.length===3 && a.agreement){
+        cnts[0].textContent='▲'+a.agreement.buy;
+        cnts[1].textContent=a.agreement.neutral;
+        cnts[2].textContent='▼'+a.agreement.sell;
+      }
+    }
+    if(state.detail===u.symbol){
+      var d=document.getElementById('detailView');
+      var dp=d.querySelector('.d-price .p'), dch=d.querySelector('.d-price .ch');
+      var big=d.querySelector('.score-big'), dreco=d.querySelector('.score-reco');
+      var sc=d.querySelectorAll('.scnt');
+      if(dp){ dp.textContent='$'+a.price.toFixed(2); if(old!=null&&old!==a.price) flash(dp, a.price>old); }
+      if(dch){ dch.textContent=chTxt(a); dch.className='ch num '+(a.change>=0?'up':'down'); }
+      if(big){ big.innerHTML=a.score100+'<small>מתוך 100</small>'; big.style.color=col; }
+      if(dreco){ dreco.textContent=a.recommendation; dreco.style.color=col; }
+      if(sc.length===3 && a.agreement){
+        sc[0].innerHTML='▲ '+a.agreement.buy+' <small>בעד</small>';
+        sc[1].innerHTML=a.agreement.neutral+' <small>ניטרלי</small>';
+        sc[2].innerHTML='▼ '+a.agreement.sell+' <small>נגד</small>';
+      }
+    }
+  }
+  function connectStream(){
+    if(state.es){ try{ state.es.close(); }catch(e){} state.es=null; }
+    state.streaming=false;
+    if(!state.list.length || typeof EventSource==='undefined'){ updateLive(); return; }
+    try{
+      var es=new EventSource('/api/stream?symbols='+encodeURIComponent(state.list.join(',')));
+      state.es=es;
+      es.onopen=function(){ state.streaming=true; updateLive(); scheduleRefresh(); };
+      es.onmessage=function(ev){ try{ applyLive(JSON.parse(ev.data)); }catch(e){} };
+      es.onerror=function(){ state.streaming=false; updateLive(); }; // EventSource מתחבר מחדש לבד
+    }catch(e){ state.streaming=false; updateLive(); }
   }
 
   // ---------- wiring ----------
@@ -700,7 +780,7 @@
   loadList();
   if(state.list.length===0){ state.list=STARTERS.slice(); saveList(); }
   render();
-  refreshAll().then(scheduleRefresh);
+  refreshAll().then(function(){ connectStream(); scheduleRefresh(); });
 })();
 </script>
 </body>

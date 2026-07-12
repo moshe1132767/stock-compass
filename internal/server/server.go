@@ -1,8 +1,9 @@
-// Package server — שרת ה-HTTP: מגיש את אתר הווב ואת ה-API לניתוח מניות.
+// Package server — שרת ה-HTTP: מגיש את אתר הווב, את ה-API, ואת הזרם החי (SSE).
 package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -11,19 +12,24 @@ import (
 
 	"stockcompass/internal/config"
 	"stockcompass/internal/indicators"
+	"stockcompass/internal/livefeed"
 	"stockcompass/internal/marketdata"
 )
 
 type Server struct {
-	mux *http.ServeMux
-	cfg config.Config
-	md  *marketdata.Client
+	mux  *http.ServeMux
+	cfg  config.Config
+	md   *marketdata.Client
+	feed *livefeed.Feed
 
 	mu     sync.Mutex
 	hist   map[string]cachedHistory // היסטוריה יומית לכל סימול
 	quotes map[string]cachedQuote   // ציטוט חי, TTL קצר
 	series map[string]cachedSeries  // סדרות גרף תוך-יומיות
 	search map[string]cachedSearch  // תוצאות חיפוש
+
+	cmu     sync.Mutex
+	clients map[*sseClient]bool // לקוחות מחוברים לזרם החי
 }
 
 type cachedHistory struct {
@@ -44,20 +50,31 @@ type cachedSearch struct {
 	at    time.Time
 	items []marketdata.SearchItem
 }
+type sseClient struct {
+	ch   chan []byte
+	syms map[string]bool
+}
 
-const quoteTTL = 15 * time.Second // מגן על מגבלת הבקשות (רענון אוטומטי כל 30ש')
+const (
+	quoteTTL      = 15 * time.Second        // מגן על מגבלת הבקשות של Twelve Data
+	broadcastTick = 500 * time.Millisecond  // עד 2 עדכונים חיים בשנייה — חלק, לא מציף
+)
 
 func New(cfg config.Config) *Server {
 	s := &Server{
-		mux:    http.NewServeMux(),
-		cfg:    cfg,
-		md:     marketdata.New(cfg.TwelveDataKey, cfg.FinnhubKey),
-		hist:   make(map[string]cachedHistory),
-		quotes: make(map[string]cachedQuote),
-		series: make(map[string]cachedSeries),
-		search: make(map[string]cachedSearch),
+		mux:     http.NewServeMux(),
+		cfg:     cfg,
+		md:      marketdata.New(cfg.TwelveDataKey, cfg.FinnhubKey),
+		feed:    livefeed.New(cfg.FinnhubKey),
+		hist:    make(map[string]cachedHistory),
+		quotes:  make(map[string]cachedQuote),
+		series:  make(map[string]cachedSeries),
+		search:  make(map[string]cachedSearch),
+		clients: make(map[*sseClient]bool),
 	}
 	s.routes()
+	s.feed.Start()
+	go s.broadcastLoop()
 	return s
 }
 
@@ -66,13 +83,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/analyze", s.handleAnalyze)
 	s.mux.HandleFunc("/api/search", s.handleSearch)
 	s.mux.HandleFunc("/api/series", s.handleSeries)
+	s.mux.HandleFunc("/api/stream", s.handleStream)
 	s.mux.Handle("/", http.FileServer(http.Dir(s.cfg.WebDir)))
 }
 
 func (s *Server) Start() error {
 	addr := ":" + s.cfg.Port
-	log.Printf("trade מאזין על %s (web=%s, twelvedata=%v, finnhub=%v)",
-		addr, s.cfg.WebDir, s.md.HasKey(), s.cfg.FinnhubKey != "")
+	log.Printf("trade מאזין על %s (web=%s, twelvedata=%v, זרם חי=%v)",
+		addr, s.cfg.WebDir, s.md.HasKey(), s.feed.Enabled())
 	return http.ListenAndServe(addr, s.logRequests(s.mux))
 }
 
@@ -80,7 +98,7 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		next.ServeHTTP(w, r)
-		if strings.HasPrefix(r.URL.Path, "/api/") {
+		if strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/stream" {
 			log.Printf("%s %s?%s (%s)", r.Method, r.URL.Path, r.URL.RawQuery, time.Since(start).Round(time.Millisecond))
 		}
 	})
@@ -97,12 +115,14 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-// analyzeResponse — תוצאת האינדיקטורים + מידע שוק (סוג הנייר, האם השוק פתוח).
+// ---------- ניתוח ----------
+
 type analyzeResponse struct {
 	indicators.Result
 	Kind       string `json:"kind"` // index / stock
 	Exchange   string `json:"exchange,omitempty"`
 	MarketOpen bool   `json:"marketOpen"`
+	Live       bool   `json:"live"` // האם הזרם החי מחובר
 }
 
 func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
@@ -122,15 +142,14 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, indicators.Result{OK: false, Symbol: symbol, Reason: err.Error()})
 		return
 	}
+	s.feed.Subscribe(symbol) // מרגע שהסתכלת על מניה — היא נכנסת לזרם החי
 
-	// ברירת מחדל מהנרות היומיים
 	prevClose := candles[len(candles)-1].Close
 	if len(candles) > 1 {
 		prevClose = candles[len(candles)-2].Close
 	}
 	name, marketOpen, exchange := symbol, false, meta.Exchange
 
-	// ציטוט חי (מחיר עדכני + שם החברה + האם השוק פתוח) — נכשל בשקט אם יש מגבלת קצב
 	if q, qerr := s.getQuote(symbol); qerr == nil {
 		if q.Price > 0 {
 			candles[len(candles)-1].Close = q.Price
@@ -145,11 +164,10 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 			exchange = q.Exchange
 		}
 		marketOpen = q.MarketOpen
-	} else if price, pc, ok := s.md.LivePrice(symbol); ok { // גיבוי: Finnhub (רשות)
-		candles[len(candles)-1].Close = price
-		if pc > 0 {
-			prevClose = pc
-		}
+	}
+	// המחיר מהזרם החי הוא הטרי ביותר — גובר על הציטוט
+	if lp, ok := s.feed.Price(symbol); ok && lp > 0 {
+		candles[len(candles)-1].Close = lp
 	}
 
 	res := indicators.Analyze(candles)
@@ -161,11 +179,139 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		res.ChangePct = res.Change / prevClose * 100
 	}
 	writeJSON(w, http.StatusOK, analyzeResponse{
-		Result: res, Kind: meta.Kind(), Exchange: exchange, MarketOpen: marketOpen,
+		Result: res, Kind: meta.Kind(), Exchange: exchange,
+		MarketOpen: marketOpen, Live: s.feed.Connected(),
 	})
 }
 
-// handleSearch — השלמה אוטומטית של סימולים.
+// ---------- הזרם החי (SSE) ----------
+
+type liveUpdate struct {
+	Symbol         string                `json:"symbol"`
+	Price          float64               `json:"price"`
+	PrevClose      float64               `json:"prevClose,omitempty"`
+	Change         float64               `json:"change"`
+	ChangePct      float64               `json:"changePct"`
+	Score100       int                   `json:"score100,omitempty"`
+	Recommendation string                `json:"recommendation,omitempty"`
+	RecoKey        string                `json:"recoKey,omitempty"`
+	Agreement      *indicators.Agreement `json:"agreement,omitempty"`
+}
+
+// handleStream — ערוץ SSE: דוחף לדפדפן כל שינוי מחיר ברגע שהוא קורה.
+func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
+	if !s.feed.Enabled() {
+		http.Error(w, "live feed disabled", http.StatusServiceUnavailable)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	syms := make(map[string]bool)
+	for _, p := range strings.Split(r.URL.Query().Get("symbols"), ",") {
+		if p = strings.ToUpper(strings.TrimSpace(p)); p != "" {
+			syms[p] = true
+			s.feed.Subscribe(p)
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // בלי באפרינג בפרוקסי
+
+	cl := &sseClient{ch: make(chan []byte, 32), syms: syms}
+	s.cmu.Lock()
+	s.clients[cl] = true
+	s.cmu.Unlock()
+	defer func() {
+		s.cmu.Lock()
+		delete(s.clients, cl)
+		s.cmu.Unlock()
+	}()
+
+	fmt.Fprint(w, "retry: 3000\n: connected\n\n")
+	flusher.Flush()
+
+	keepalive := time.NewTicker(25 * time.Second)
+	defer keepalive.Stop()
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case b := <-cl.ch:
+			fmt.Fprintf(w, "data: %s\n\n", b)
+			flusher.Flush()
+		case <-keepalive.C:
+			fmt.Fprint(w, ": ping\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+// broadcastLoop — כל חצי שנייה: לוקח את המחירים שהשתנו ודוחף אותם ללקוחות.
+func (s *Server) broadcastLoop() {
+	t := time.NewTicker(broadcastTick)
+	defer t.Stop()
+	for range t.C {
+		dirty := s.feed.TakeDirty()
+		if len(dirty) == 0 {
+			continue
+		}
+		for sym, price := range dirty {
+			b, err := json.Marshal(s.livePayload(sym, price))
+			if err != nil {
+				continue
+			}
+			s.cmu.Lock()
+			for cl := range s.clients {
+				if !cl.syms[sym] {
+					continue
+				}
+				select {
+				case cl.ch <- b:
+				default: // לקוח איטי — מדלגים במקום לחסום
+				}
+			}
+			s.cmu.Unlock()
+		}
+	}
+}
+
+// livePayload — עדכון חי. אם יש נרות במטמון, מחשב מחדש גם את הציון — חישוב מקומי בלבד, בלי בקשות API.
+func (s *Server) livePayload(sym string, price float64) liveUpdate {
+	u := liveUpdate{Symbol: sym, Price: price}
+
+	candles, ok := s.cachedCandles(sym)
+	if !ok || len(candles) < 2 {
+		return u // אין נרות במטמון — שולחים מחיר בלבד
+	}
+	prev := candles[len(candles)-2].Close
+	if q, ok := s.cachedQuote(sym); ok && q.PrevClose > 0 {
+		prev = q.PrevClose
+	}
+	candles[len(candles)-1].Close = price
+
+	res := indicators.Analyze(candles)
+	ag := res.Agreement
+	u.PrevClose = prev
+	u.Change = price - prev
+	if prev != 0 {
+		u.ChangePct = u.Change / prev * 100
+	}
+	u.Score100 = res.Score100
+	u.Recommendation = res.Recommendation
+	u.RecoKey = res.RecoKey
+	u.Agreement = &ag
+	return u
+}
+
+// ---------- חיפוש ----------
+
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	if len(q) < 1 || !s.md.HasKey() {
@@ -193,7 +339,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
-// rangeSpec — טווח הגרף → אינטרוול, מספר נקודות, ו-TTL למטמון.
+// ---------- גרף ----------
+
 func rangeSpec(rng string) (interval string, size int, ttl time.Duration) {
 	switch rng {
 	case "1h":
@@ -217,7 +364,7 @@ type seriesResponse struct {
 	Points []marketdata.Point `json:"points"`
 }
 
-// handleSeries — נקודות לגרף המחיר. 1m/1y נגזרים מההיסטוריה במטמון (בלי בקשה נוספת).
+// handleSeries — נקודות לגרף. 1m/1y נגזרים מההיסטוריה במטמון (בלי בקשה נוספת).
 func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 	symbol := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("symbol")))
 	rng := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("range")))
@@ -229,7 +376,6 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1m / 1y — מתוך הנרות היומיים שכבר במטמון: אפס בקשות נוספות
 	if rng == "1m" || rng == "1y" {
 		candles, _, err := s.getHistory(symbol)
 		if err != nil {
@@ -274,7 +420,8 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, seriesResponse{OK: true, Symbol: symbol, Range: rng, Points: pts})
 }
 
-// getQuote — ציטוט חי עם מטמון קצר (מגן על מגבלת הקצב של ספק הנתונים).
+// ---------- מטמונים ----------
+
 func (s *Server) getQuote(symbol string) (marketdata.Quote, error) {
 	s.mu.Lock()
 	if c, ok := s.quotes[symbol]; ok && time.Since(c.at) < quoteTTL {
@@ -293,7 +440,13 @@ func (s *Server) getQuote(symbol string) (marketdata.Quote, error) {
 	return q, nil
 }
 
-// getHistory — נרות יומיים עם מטמון יומי (משתנים פעם ביום).
+func (s *Server) cachedQuote(symbol string) (marketdata.Quote, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.quotes[symbol]
+	return c.q, ok
+}
+
 func (s *Server) getHistory(symbol string) ([]indicators.Candle, marketdata.Meta, error) {
 	today := time.Now().Format("2006-01-02")
 	s.mu.Lock()
@@ -313,7 +466,18 @@ func (s *Server) getHistory(symbol string) ([]indicators.Candle, marketdata.Meta
 	return cloneCandles(candles), meta, nil
 }
 
-// cloneCandles — עותק כדי שעדכון המחיר החי לא ישנה את המטמון.
+// cachedCandles — קריאה מהמטמון בלבד (בלי לפנות ל-API) — לשימוש בלולאת השידור.
+func (s *Server) cachedCandles(symbol string) ([]indicators.Candle, bool) {
+	today := time.Now().Format("2006-01-02")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.hist[symbol]
+	if !ok || c.day != today {
+		return nil, false
+	}
+	return cloneCandles(c.candles), true
+}
+
 func cloneCandles(in []indicators.Candle) []indicators.Candle {
 	out := make([]indicators.Candle, len(in))
 	copy(out, in)
