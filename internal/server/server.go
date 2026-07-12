@@ -1,4 +1,8 @@
 // Package server — שרת ה-HTTP: מגיש את אתר הווב, את ה-API, ואת הזרם החי (SSE).
+//
+// כלל הברזל של הקובץ הזה: בקשה של משתמש לעולם לא ממתינה לספק חיצוני.
+// מה שיש במטמון מוגש מיד (גם אם הוא קצת ישן), והרענון קורה ברקע.
+// רק בפעם הראשונה שרואים סימול חדש מביאים נתונים תוך כדי הבקשה — קריאה אחת, בלי תור.
 package server
 
 import (
@@ -24,17 +28,19 @@ type Server struct {
 	md   *marketdata.Client
 	feed *livefeed.Feed
 
-	mu     sync.Mutex
-	hist   map[string]cachedHistory // היסטוריה יומית לכל סימול (עד ~20 שנה)
-	deep   map[string]cachedHistory // כל ההיסטוריה שקיימת — לטווח "מקסימום"
-	bt     map[string]cachedBT      // סימולציית עבר
-	quotes map[string]cachedQuote   // ציטוט Finnhub, TTL קצר
-	names  map[string]string        // שם חברה לכל סימול — לא משתנה, נשמר לתמיד
-	series map[string]cachedSeries  // סדרות גרף תוך-יומיות
-	search map[string]cachedSearch  // תוצאות חיפוש
+	mu       sync.Mutex
+	hist     map[string]cachedHistory // היסטוריה יומית מלאה לכל סימול
+	deep     map[string]cachedHistory // היסטוריה עמוקה (רק במסלול הגיבוי של Twelve Data)
+	bt       map[string]cachedBT      // סימולציית עבר
+	quotes   map[string]cachedQuote   // ציטוט Finnhub
+	names    map[string]string        // שם חברה — לא משתנה, נשמר לתמיד
+	series   map[string]cachedSeries  // סדרות גרף תוך-יומיות
+	search   map[string]cachedSearch  // תוצאות חיפוש
+	seen     map[string]time.Time     // סימולים שהמשתמש נגע בהם — אותם מחזיקים חמים
+	inflight map[string]*flight       // בקשה אחת בכל רגע לכל מפתח
 
 	cmu     sync.Mutex
-	clients map[*sseClient]bool // לקוחות מחוברים לזרם החי
+	clients map[*sseClient]bool
 }
 
 type cachedHistory struct {
@@ -64,19 +70,23 @@ type sseClient struct {
 	syms map[string]bool
 }
 
+// flight — בקשה שכבר בדרך; מי שמבקש את אותו דבר ממתין לה במקום לשלוח בקשה כפולה.
+type flight struct{ done chan struct{} }
+
 const (
-	broadcastTick = 500 * time.Millisecond // עד 2 עדכונים חיים בשנייה — חלק, לא מציף
-	maxDeepPages  = 2                      // 3 עמודים × 5000 = ~60 שנה, מספיק לכל מניה
-	chartPoints   = 400                    // דילול נקודות הגרף — יותר מזה לא נראה על מסך טלפון
+	broadcastTick = 500 * time.Millisecond // עד 2 עדכונים חיים בשנייה
+	chartPoints   = 400                    // דילול נקודות הגרף
+	warmTick      = 20 * time.Second       // דופק הרענון ברקע
+	seenTTL       = 3 * 24 * time.Hour     // כמה זמן ממשיכים לחמם סימול שלא נצפה
+	firstFetchCap = 6 * time.Second        // תקרה מוחלטת להבאה ראשונה של סימול חדש
+	maxDeepPages  = 2
 )
 
-// marketHours — האם הבורסה בארה"ב פתוחה עכשיו (לפי השעון בלבד).
-// משמש רק כדי להחליט כמה זמן להחזיק נתונים במטמון — כשהשוק סגור שום דבר לא זז,
-// אז אין שום סיבה לבזבז בקשות אצל הספק.
+// marketHours — האם הבורסה בארה"ב פתוחה עכשיו (לפי השעון).
 func marketHours() bool {
 	ny, err := time.LoadLocation("America/New_York")
 	if err != nil {
-		return true // ליתר ביטחון — מטמון קצר
+		return true
 	}
 	t := time.Now().In(ny)
 	if t.Weekday() == time.Saturday || t.Weekday() == time.Sunday {
@@ -86,7 +96,7 @@ func marketHours() bool {
 	return m >= 9*60+30 && m < 16*60
 }
 
-// ttl — מטמון קצר כשהשוק פתוח, ארוך כשהוא סגור.
+// ttl — מטמון קצר כשהשוק פתוח, ארוך כשהוא סגור (אז שום דבר לא זז ממילא).
 func ttl(open, closed time.Duration) time.Duration {
 	if marketHours() {
 		return open
@@ -94,27 +104,43 @@ func ttl(open, closed time.Duration) time.Duration {
 	return closed
 }
 
-// ציטוט Finnhub — המכסה שלו נדיבה (60/דקה), אפשר להרשות רעננות של 15 שניות
 func quoteTTL() time.Duration { return ttl(15*time.Second, 6*time.Hour) }
+
+// seriesTTL — כל כמה זמן שווה לרענן גרף תוך-יומי.
+func seriesTTL(rng string) time.Duration {
+	switch rng {
+	case "1h":
+		return ttl(60*time.Second, 6*time.Hour)
+	case "1w":
+		return ttl(10*time.Minute, 6*time.Hour)
+	default: // 1d
+		return ttl(2*time.Minute, 6*time.Hour)
+	}
+}
+
+func today() string { return time.Now().Format("2006-01-02") }
 
 func New(cfg config.Config) *Server {
 	s := &Server{
-		mux:     http.NewServeMux(),
-		cfg:     cfg,
-		md:      marketdata.New(cfg.TwelveDataKey, cfg.FinnhubKey),
-		feed:    livefeed.New(cfg.FinnhubKey),
-		hist:    make(map[string]cachedHistory),
-		deep:    make(map[string]cachedHistory),
-		bt:      make(map[string]cachedBT),
-		quotes:  make(map[string]cachedQuote),
-		names:   make(map[string]string),
-		series:  make(map[string]cachedSeries),
-		search:  make(map[string]cachedSearch),
-		clients: make(map[*sseClient]bool),
+		mux:      http.NewServeMux(),
+		cfg:      cfg,
+		md:       marketdata.New(cfg.TwelveDataKey, cfg.FinnhubKey),
+		feed:     livefeed.New(cfg.FinnhubKey),
+		hist:     make(map[string]cachedHistory),
+		deep:     make(map[string]cachedHistory),
+		bt:       make(map[string]cachedBT),
+		quotes:   make(map[string]cachedQuote),
+		names:    make(map[string]string),
+		series:   make(map[string]cachedSeries),
+		search:   make(map[string]cachedSearch),
+		seen:     make(map[string]time.Time),
+		inflight: make(map[string]*flight),
+		clients:  make(map[*sseClient]bool),
 	}
 	s.routes()
 	s.feed.Start()
 	go s.broadcastLoop()
+	go s.warmLoop()
 	return s
 }
 
@@ -130,7 +156,7 @@ func (s *Server) routes() {
 
 func (s *Server) Start() error {
 	addr := ":" + s.cfg.Port
-	log.Printf("trade מאזין על %s (web=%s, twelvedata=%v, זרם חי=%v)",
+	log.Printf("trade מאזין על %s (web=%s, נרות=yahoo, גיבוי=%v, זרם חי=%v)",
 		addr, s.cfg.WebDir, s.md.HasKey(), s.feed.Enabled())
 	return http.ListenAndServe(addr, s.logRequests(s.mux))
 }
@@ -146,8 +172,11 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"status":"ok"}`))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  "ok",
+		"candles": s.md.CandleSource(), // מי מספק את הנרות בפועל
+		"live":    s.feed.Connected(),
+	})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -156,14 +185,47 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
+// ---------- singleflight ----------
+
+// once — מריץ את fn פעם אחת בלבד לכל מפתח. אם כבר רצה בקשה כזו, ממתינים לתוצאה שלה
+// (עד cap) במקום לשלוח בקשה כפולה לספק.
+func (s *Server) once(key string, cap time.Duration, fn func()) {
+	s.mu.Lock()
+	if f, ok := s.inflight[key]; ok {
+		s.mu.Unlock()
+		select {
+		case <-f.done:
+		case <-time.After(cap):
+		}
+		return
+	}
+	f := &flight{done: make(chan struct{})}
+	s.inflight[key] = f
+	s.mu.Unlock()
+
+	fn()
+
+	s.mu.Lock()
+	delete(s.inflight, key)
+	s.mu.Unlock()
+	close(f.done)
+}
+
+// touch — מסמן שהמשתמש מתעניין בסימול; מכאן והלאה מחזיקים אותו חם ברקע.
+func (s *Server) touch(symbol string) {
+	s.mu.Lock()
+	s.seen[symbol] = time.Now()
+	s.mu.Unlock()
+}
+
 // ---------- ניתוח ----------
 
 type analyzeResponse struct {
 	indicators.Result
-	Kind       string `json:"kind"` // index / stock
+	Kind       string `json:"kind"`
 	Exchange   string `json:"exchange,omitempty"`
 	MarketOpen bool   `json:"marketOpen"`
-	Live       bool   `json:"live"` // האם הזרם החי מחובר
+	Live       bool   `json:"live"`
 }
 
 func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
@@ -172,13 +234,8 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, indicators.Result{OK: false, Reason: "חסר סימול מניה."})
 		return
 	}
-	if !s.md.HasKey() {
-		writeJSON(w, http.StatusServiceUnavailable, indicators.Result{OK: false,
-			Reason: "השרת לא הוגדר עם מפתח נתונים (TWELVEDATA_API_KEY)."})
-		return
-	}
 
-	full, meta, err := s.historyRaw(symbol)
+	full, meta, err := s.history(symbol)
 	if err != nil {
 		writeJSON(w, http.StatusOK, indicators.Result{OK: false, Symbol: symbol, Reason: err.Error()})
 		return
@@ -190,12 +247,10 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	if len(candles) > 1 {
 		prevClose = candles[len(candles)-2].Close
 	}
-	name, exchange := s.companyName(symbol), meta.Exchange
 	marketOpen := marketHours()
 
-	// המחיר החי מגיע מ-Finnhub (המכסה הנדיבה) — Twelve Data לא נשאל בכלל.
-	// זמן העסקה האחרונה מגלה גם חגים: השעון אומר "פתוח" אבל אין מסחר → סגור.
-	if q, qerr := s.getQuote(symbol); qerr == nil {
+	// המחיר החי מגיע מ-Finnhub (מכסה נדיבה). זמן העסקה האחרונה מגלה גם חגים.
+	if q, ok := s.getQuote(symbol); ok {
 		if q.Price > 0 {
 			candles[len(candles)-1].Close = q.Price
 		}
@@ -213,14 +268,14 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 
 	res := indicators.Analyze(candles)
 	res.Symbol = symbol
-	res.Name = name
+	res.Name = s.companyName(symbol, meta.Name)
 	res.PrevClose = prevClose
 	res.Change = res.Price - prevClose
 	if prevClose != 0 {
 		res.ChangePct = res.Change / prevClose * 100
 	}
 	writeJSON(w, http.StatusOK, analyzeResponse{
-		Result: res, Kind: meta.Kind(), Exchange: exchange,
+		Result: res, Kind: meta.Kind(), Exchange: meta.Exchange,
 		MarketOpen: marketOpen, Live: s.feed.Connected(),
 	})
 }
@@ -239,7 +294,6 @@ type liveUpdate struct {
 	Agreement      *indicators.Agreement `json:"agreement,omitempty"`
 }
 
-// handleStream — ערוץ SSE: דוחף לדפדפן כל שינוי מחיר ברגע שהוא קורה.
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	if !s.feed.Enabled() {
 		http.Error(w, "live feed disabled", http.StatusServiceUnavailable)
@@ -256,13 +310,14 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		if p = strings.ToUpper(strings.TrimSpace(p)); p != "" {
 			syms[p] = true
 			s.feed.Subscribe(p)
+			s.touch(p) // הרשימה של המשתמש — בדיוק מה שצריך להישאר חם
 		}
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no") // בלי באפרינג בפרוקסי
+	w.Header().Set("X-Accel-Buffering", "no")
 
 	cl := &sseClient{ch: make(chan []byte, 32), syms: syms}
 	s.cmu.Lock()
@@ -294,7 +349,6 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// broadcastLoop — כל חצי שנייה: לוקח את המחירים שהשתנו ודוחף אותם ללקוחות.
 func (s *Server) broadcastLoop() {
 	t := time.NewTicker(broadcastTick)
 	defer t.Stop()
@@ -323,13 +377,13 @@ func (s *Server) broadcastLoop() {
 	}
 }
 
-// livePayload — עדכון חי. אם יש נרות במטמון, מחשב מחדש גם את הציון — חישוב מקומי בלבד, בלי בקשות API.
+// livePayload — עדכון חי. הציון מחושב מחדש מהנרות שבמטמון — אפס בקשות API.
 func (s *Server) livePayload(sym string, price float64) liveUpdate {
 	u := liveUpdate{Symbol: sym, Price: price}
 
 	candles, ok := s.cachedCandles(sym)
 	if !ok || len(candles) < 2 {
-		return u // אין נרות במטמון — שולחים מחיר בלבד
+		return u
 	}
 	prev := candles[len(candles)-2].Close
 	if q, ok := s.cachedQuote(sym); ok && q.PrevClose > 0 {
@@ -362,7 +416,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	key := strings.ToLower(q)
 
 	s.mu.Lock()
-	if c, ok := s.search[key]; ok && time.Since(c.at) < 5*time.Minute {
+	if c, ok := s.search[key]; ok && time.Since(c.at) < 10*time.Minute {
 		s.mu.Unlock()
 		writeJSON(w, http.StatusOK, c.items)
 		return
@@ -382,17 +436,6 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 // ---------- גרף ----------
 
-func rangeSpec(rng string) (interval string, size int, cacheFor time.Duration) {
-	switch rng {
-	case "1h":
-		return "1min", 60, ttl(2*time.Minute, 6*time.Hour)
-	case "1w":
-		return "1h", 40, ttl(15*time.Minute, 6*time.Hour)
-	default: // 1d
-		return "5min", 78, ttl(3*time.Minute, 6*time.Hour)
-	}
-}
-
 type seriesResponse struct {
 	OK     bool               `json:"ok"`
 	Symbol string             `json:"symbol"`
@@ -401,7 +444,7 @@ type seriesResponse struct {
 	Points []marketdata.Point `json:"points"`
 }
 
-// derivedDays — טווחים שנגזרים מההיסטוריה היומית שכבר במטמון (0 = הכול). אפס בקשות API נוספות.
+// derivedDays — טווחים שנגזרים מההיסטוריה היומית שכבר במטמון (0 = הכול). אפס בקשות נוספות.
 var derivedDays = map[string]int{"1m": 23, "1y": 252, "5y": 1260, "max": 0}
 
 // downsample — מדלל נקודות בלי לאבד את הראשונה והאחרונה.
@@ -421,25 +464,25 @@ func downsample(pts []marketdata.Point, max int) []marketdata.Point {
 	return out
 }
 
-// handleSeries — נקודות לגרף. חודש/שנה/5 שנים/מקסימום נגזרים מההיסטוריה במטמון (בלי בקשה נוספת).
 func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 	symbol := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("symbol")))
 	rng := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("range")))
 	if rng == "" {
 		rng = "1d"
 	}
-	if symbol == "" || !s.md.HasKey() {
-		writeJSON(w, http.StatusOK, seriesResponse{OK: false, Symbol: symbol, Range: rng, Reason: "חסר סימול."})
+	if symbol == "" {
+		writeJSON(w, http.StatusOK, seriesResponse{OK: false, Range: rng, Reason: "חסר סימול."})
 		return
 	}
 
+	// חודש/שנה/5 שנים/מקסימום — נגזרים מההיסטוריה היומית. בלי שום בקשה חיצונית.
 	if days, derived := derivedDays[rng]; derived {
 		var candles []indicators.Candle
 		var err error
 		if rng == "max" {
-			candles, err = s.deepHistory(symbol) // כל מה שהספק נותן, גם אחורה בזמן
+			candles, err = s.deepHistory(symbol)
 		} else {
-			candles, _, err = s.historyRaw(symbol)
+			candles, _, err = s.history(symbol)
 		}
 		if err != nil {
 			writeJSON(w, http.StatusOK, seriesResponse{OK: false, Symbol: symbol, Range: rng, Reason: err.Error()})
@@ -457,139 +500,163 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	interval, size, cacheFor := rangeSpec(rng)
-	key := symbol + "|" + rng
-
-	s.mu.Lock()
-	if c, ok := s.series[key]; ok && time.Since(c.at) < c.ttl {
-		pts := c.pts
-		s.mu.Unlock()
-		writeJSON(w, http.StatusOK, seriesResponse{OK: true, Symbol: symbol, Range: rng, Points: pts})
-		return
-	}
-	s.mu.Unlock()
-
-	pts, err := s.md.Series(symbol, interval, size)
+	pts, err := s.intraday(symbol, rng)
 	if err != nil {
 		writeJSON(w, http.StatusOK, seriesResponse{OK: false, Symbol: symbol, Range: rng, Reason: err.Error()})
 		return
 	}
-	s.mu.Lock()
-	s.series[key] = cachedSeries{at: time.Now(), ttl: cacheFor, pts: pts}
-	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, seriesResponse{OK: true, Symbol: symbol, Range: rng, Points: pts})
 }
 
-// ---------- מטמונים ----------
+// intraday — גרף תוך-יומי מהמטמון. ישן מוגש מיד ומתרענן ברקע; רק בפעם הראשונה מביאים בבקשה עצמה.
+func (s *Server) intraday(symbol, rng string) ([]marketdata.Point, error) {
+	s.touch(symbol)
+	key := symbol + "|" + rng
 
-func (s *Server) getQuote(symbol string) (marketdata.FHQuote, error) {
 	s.mu.Lock()
-	if c, ok := s.quotes[symbol]; ok && time.Since(c.at) < quoteTTL() {
-		s.mu.Unlock()
-		return c.q, nil
-	}
+	c, ok := s.series[key]
 	s.mu.Unlock()
+	if ok {
+		if time.Since(c.at) >= c.ttl {
+			go s.fetchSeries(symbol, rng, marketdata.WaitBG)
+		}
+		return c.pts, nil
+	}
 
-	q, err := s.md.FinnhubQuote(symbol)
-	if err != nil {
-		return marketdata.FHQuote{}, err
-	}
+	err := s.fetchSeries(symbol, rng, marketdata.WaitUser)
 	s.mu.Lock()
-	s.quotes[symbol] = cachedQuote{at: time.Now(), q: q}
+	c, ok = s.series[key]
 	s.mu.Unlock()
-	return q, nil
+	if ok {
+		return c.pts, nil
+	}
+	if err == nil {
+		err = fmt.Errorf("אין נתוני גרף עבור %s", symbol)
+	}
+	return nil, err
 }
 
-func (s *Server) cachedQuote(symbol string) (marketdata.FHQuote, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	c, ok := s.quotes[symbol]
-	return c.q, ok
+func (s *Server) fetchSeries(symbol, rng string, wait time.Duration) error {
+	var err error
+	s.once("s|"+symbol+"|"+rng, firstFetchCap, func() {
+		pts, e := s.md.Intraday(symbol, rng, wait)
+		if e != nil || len(pts) == 0 {
+			err = e
+			return
+		}
+		s.mu.Lock()
+		s.series[symbol+"|"+rng] = cachedSeries{at: time.Now(), ttl: seriesTTL(rng), pts: pts}
+		s.mu.Unlock()
+	})
+	return err
 }
 
-// companyName — שם החברה מהמטמון הקבוע; בפעם הראשונה נשאל את הספקים ושומרים לתמיד.
-func (s *Server) companyName(symbol string) string {
+// ---------- היסטוריה: תמיד מהמטמון, רענון ברקע ----------
+
+// history — ההיסטוריה היומית. הפרוסה משותפת — לקריאה בלבד (מי שמשנה ישתמש ב-tailCopy).
+func (s *Server) history(symbol string) ([]indicators.Candle, marketdata.Meta, error) {
+	s.touch(symbol)
+
 	s.mu.Lock()
-	if n, ok := s.names[symbol]; ok {
-		s.mu.Unlock()
-		return n
-	}
+	c, ok := s.hist[symbol]
 	s.mu.Unlock()
 
-	n, err := s.md.CompanyName(symbol)
-	if err != nil || n == "" {
-		return symbol // לא שווה להיכשל בגלל שם — ננסה שוב בפעם הבאה
-	}
-	s.mu.Lock()
-	s.names[symbol] = n
-	s.mu.Unlock()
-	return n
-}
-
-// historyRaw — ההיסטוריה היומית מהמטמון (או מהספק). הפרוסה המוחזרת משותפת — לקריאה בלבד!
-// מי שצריך לשנות נרות ישתמש ב-tailCopy.
-func (s *Server) historyRaw(symbol string) ([]indicators.Candle, marketdata.Meta, error) {
-	today := time.Now().Format("2006-01-02")
-	s.mu.Lock()
-	if c, ok := s.hist[symbol]; ok && c.day == today {
-		s.mu.Unlock()
+	if ok {
+		if c.day != today() {
+			go s.fetchHistory(symbol, marketdata.WaitBG) // התיישן — מרעננים ברקע, בלי להשהות אף אחד
+		}
 		return c.candles, c.meta, nil
 	}
-	s.mu.Unlock()
 
-	candles, meta, err := s.md.History(symbol)
-	if err != nil {
-		return nil, marketdata.Meta{}, err
-	}
+	// סימול חדש שאין עליו כלום — חייבים להביא עכשיו. קריאה אחת, בלי תור.
+	err := s.fetchHistory(symbol, marketdata.WaitUser)
 	s.mu.Lock()
-	s.hist[symbol] = cachedHistory{day: today, meta: meta, candles: candles}
+	c, ok = s.hist[symbol]
 	s.mu.Unlock()
-	return candles, meta, nil
+	if ok {
+		return c.candles, c.meta, nil
+	}
+	if err == nil {
+		err = fmt.Errorf("לא נמצאו נתונים עבור %s", symbol)
+	}
+	return nil, marketdata.Meta{}, err
 }
 
-// deepHistory — כל ההיסטוריה שקיימת למניה, גם מעבר לעומק של בקשה אחת (טווח "מקסימום").
-// מדפדף אחורה בעמודים; אם הספק לא נותן יותר — פשוט מסתפק במה שיש.
-func (s *Server) deepHistory(symbol string) ([]indicators.Candle, error) {
-	today := time.Now().Format("2006-01-02")
-	s.mu.Lock()
-	if c, ok := s.deep[symbol]; ok && c.day == today {
+func (s *Server) fetchHistory(symbol string, wait time.Duration) error {
+	var err error
+	s.once("h|"+symbol, firstFetchCap, func() {
+		candles, meta, e := s.md.History(symbol, wait)
+		if e != nil || len(candles) == 0 {
+			err = e
+			return
+		}
+		s.mu.Lock()
+		s.hist[symbol] = cachedHistory{day: today(), meta: meta, candles: candles}
+		if meta.Name != "" {
+			s.names[symbol] = meta.Name // Yahoo מחזיר את השם בחינם — חוסך בקשה
+		}
+		delete(s.bt, symbol) // נתונים חדשים — הסימולציה תחושב מחדש בפעם הבאה
 		s.mu.Unlock()
-		return c.candles, nil
-	}
-	s.mu.Unlock()
+	})
+	return err
+}
 
-	base, _, err := s.historyRaw(symbol)
+// deepHistory — טווח "מקסימום". אצל Yahoo ההיסטוריה ממילא מלאה מיום ההנפקה;
+// רק במסלול הגיבוי של Twelve Data צריך לדפדף אחורה — וזה קורה ברקע בלבד.
+func (s *Server) deepHistory(symbol string) ([]indicators.Candle, error) {
+	base, meta, err := s.history(symbol)
 	if err != nil {
 		return nil, err
 	}
-	all := append([]indicators.Candle(nil), base...) // עותק — לא נוגעים במטמון
-
-	// אם העמוד הראשון לא היה מלא — כבר יש לנו את כל ההיסטוריה
-	for page := 0; page < maxDeepPages && len(all) >= marketdata.MaxCandles; page++ {
-		oldest := all[0].Date
-		older, err := s.md.HistoryBefore(symbol, dayOf(oldest))
-		if err != nil {
-			break
-		}
-		var fresh []indicators.Candle
-		for _, c := range older {
-			if c.Date < oldest { // תאריכי YYYY-MM-DD — השוואת מחרוזות תקינה
-				fresh = append(fresh, c)
-			}
-		}
-		if len(fresh) == 0 {
-			break
-		}
-		all = append(fresh, all...)
-		if len(older) < marketdata.MaxCandles { // העמוד לא היה מלא — הגענו לתחילת ההיסטוריה
-			break
-		}
-	}
+	_ = meta
 
 	s.mu.Lock()
-	s.deep[symbol] = cachedHistory{day: today, candles: all}
+	c, ok := s.deep[symbol]
 	s.mu.Unlock()
-	return all, nil
+	if ok && c.day == today() {
+		return c.candles, nil // ההיסטוריה המלאה כבר במטמון
+	}
+
+	// עוד לא הבאנו את הכל — מביאים ברקע ומגישים בינתיים את 8 השנים שיש. אף אחד לא מחכה.
+	go s.fetchDeep(symbol)
+	if ok {
+		return c.candles, nil
+	}
+	return base, nil
+}
+
+// fetchDeep — כל ההיסטוריה מיום ההנפקה. מנה כבדה, ולכן תמיד ברקע.
+func (s *Server) fetchDeep(symbol string) {
+	s.once("d|"+symbol, firstFetchCap, func() {
+		all, _, err := s.md.HistoryAll(symbol, marketdata.WaitBG)
+		if err != nil || len(all) == 0 {
+			return
+		}
+		// במסלול הגיבוי של Twelve Data מגיעים 5000 נרות לכל היותר — מדפדפים אחורה
+		for page := 0; page < maxDeepPages && len(all) >= marketdata.MaxCandles; page++ {
+			oldest := all[0].Date
+			older, err := s.md.HistoryBefore(symbol, dayOf(oldest), marketdata.WaitBG)
+			if err != nil {
+				break
+			}
+			var fresh []indicators.Candle
+			for _, c := range older {
+				if c.Date < oldest { // YYYY-MM-DD — השוואת מחרוזות תקינה
+					fresh = append(fresh, c)
+				}
+			}
+			if len(fresh) == 0 {
+				break
+			}
+			all = append(fresh, all...)
+			if len(older) < marketdata.MaxCandles {
+				break
+			}
+		}
+		s.mu.Lock()
+		s.deep[symbol] = cachedHistory{day: today(), candles: all}
+		s.mu.Unlock()
+	})
 }
 
 func dayOf(datetime string) string {
@@ -599,7 +666,60 @@ func dayOf(datetime string) string {
 	return datetime
 }
 
-// ---------- סימולציית עבר: "מה היה קורה אם היית מקשיב" ----------
+// ---------- חימום ברקע ----------
+
+// warmLoop — הדופק שמחזיק את הנתונים חמים, כדי שהמשתמש תמיד יקבל תשובה מיידית.
+// כל מה שכאן ממתין בסבלנות בתור של הספק — אף אחד לא מסתכל על זה.
+func (s *Server) warmLoop() {
+	t := time.NewTicker(warmTick)
+	defer t.Stop()
+	for range t.C {
+		for _, sym := range s.warmList() {
+			s.mu.Lock()
+			h, hasHist := s.hist[sym]
+			s.mu.Unlock()
+			if !hasHist || h.day != today() {
+				s.fetchHistory(sym, marketdata.WaitBG)
+			}
+
+			s.mu.Lock()
+			d, hasDeep := s.deep[sym]
+			s.mu.Unlock()
+			if !hasDeep || d.day != today() {
+				s.fetchDeep(sym) // שגרף "מקס" יהיה מוכן עוד לפני שילחצו עליו
+			}
+
+			for _, rng := range []string{"1h", "1d", "1w"} {
+				s.mu.Lock()
+				c, has := s.series[sym+"|"+rng]
+				s.mu.Unlock()
+				switch {
+				case has && time.Since(c.at) >= c.ttl:
+					s.fetchSeries(sym, rng, marketdata.WaitBG) // התיישן — מרעננים
+				case !has && rng == "1d" && s.md.YahooUp():
+					s.fetchSeries(sym, rng, marketdata.WaitBG) // הגרף שנפתח ראשון — שיהיה מוכן מראש
+				}
+			}
+		}
+	}
+}
+
+// warmList — הסימולים שהמשתמש נגע בהם לאחרונה.
+func (s *Server) warmList() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.seen))
+	for sym, at := range s.seen {
+		if time.Since(at) > seenTTL {
+			delete(s.seen, sym)
+			continue
+		}
+		out = append(out, sym)
+	}
+	return out
+}
+
+// ---------- סימולציית עבר ----------
 
 type backtestResponse struct {
 	OK     bool   `json:"ok"`
@@ -610,21 +730,20 @@ type backtestResponse struct {
 
 func (s *Server) handleBacktest(w http.ResponseWriter, r *http.Request) {
 	symbol := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("symbol")))
-	if symbol == "" || !s.md.HasKey() {
-		writeJSON(w, http.StatusOK, backtestResponse{OK: false, Symbol: symbol, Reason: "חסר סימול."})
+	if symbol == "" {
+		writeJSON(w, http.StatusOK, backtestResponse{OK: false, Reason: "חסר סימול."})
 		return
 	}
 
-	today := time.Now().Format("2006-01-02")
 	s.mu.Lock()
-	if c, ok := s.bt[symbol]; ok && c.day == today {
+	if c, ok := s.bt[symbol]; ok && c.day == today() {
 		s.mu.Unlock()
 		writeJSON(w, http.StatusOK, backtestResponse{OK: true, Symbol: symbol, Result: c.res})
 		return
 	}
 	s.mu.Unlock()
 
-	candles, _, err := s.historyRaw(symbol)
+	candles, _, err := s.history(symbol)
 	if err != nil {
 		writeJSON(w, http.StatusOK, backtestResponse{OK: false, Symbol: symbol, Reason: err.Error()})
 		return
@@ -632,24 +751,76 @@ func (s *Server) handleBacktest(w http.ResponseWriter, r *http.Request) {
 
 	res := backtest.Run(candles) // חישוב מקומי בלבד — אפס בקשות API
 	s.mu.Lock()
-	s.bt[symbol] = cachedBT{day: today, res: res}
+	s.bt[symbol] = cachedBT{day: today(), res: res}
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, backtestResponse{OK: true, Symbol: symbol, Result: res})
 }
 
-// cachedCandles — עותק של חלון הנרות האחרון, מהמטמון בלבד (בלי לפנות ל-API) — ללולאת השידור.
+// ---------- מטמונים קטנים ----------
+
+// getQuote — ציטוט Finnhub. אם הוא לא זמין — פשוט אין ציטוט; לא מפילים את הבקשה.
+func (s *Server) getQuote(symbol string) (marketdata.FHQuote, bool) {
+	s.mu.Lock()
+	c, ok := s.quotes[symbol]
+	s.mu.Unlock()
+	if ok && time.Since(c.at) < quoteTTL() {
+		return c.q, true
+	}
+
+	q, err := s.md.FinnhubQuote(symbol)
+	if err != nil {
+		return c.q, ok // ציטוט ישן עדיף על כלום
+	}
+	s.mu.Lock()
+	s.quotes[symbol] = cachedQuote{at: time.Now(), q: q}
+	s.mu.Unlock()
+	return q, true
+}
+
+func (s *Server) cachedQuote(symbol string) (marketdata.FHQuote, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.quotes[symbol]
+	return c.q, ok
+}
+
+// companyName — השם מהמטמון; אם Yahoo כבר החזיר אותו — משתמשים בו ולא שואלים אף אחד.
+func (s *Server) companyName(symbol, fromMeta string) string {
+	s.mu.Lock()
+	n, ok := s.names[symbol]
+	s.mu.Unlock()
+	if ok && n != "" {
+		return n
+	}
+	if fromMeta != "" {
+		s.mu.Lock()
+		s.names[symbol] = fromMeta
+		s.mu.Unlock()
+		return fromMeta
+	}
+
+	n, err := s.md.CompanyName(symbol)
+	if err != nil || n == "" {
+		return symbol // לא שווה להיכשל בגלל שם
+	}
+	s.mu.Lock()
+	s.names[symbol] = n
+	s.mu.Unlock()
+	return n
+}
+
+// cachedCandles — עותק של חלון הנרות האחרון, מהמטמון בלבד — ללולאת השידור החי.
 func (s *Server) cachedCandles(symbol string) ([]indicators.Candle, bool) {
-	today := time.Now().Format("2006-01-02")
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c, ok := s.hist[symbol]
-	if !ok || c.day != today {
+	if !ok || len(c.candles) == 0 {
 		return nil, false
 	}
 	return tailCopy(c.candles, indicators.Window), true
 }
 
-// tailCopy — עותק בר-שינוי של N הנרות האחרונים. המטמון עצמו לעולם לא נוגעים בו.
+// tailCopy — עותק בר-שינוי של N הנרות האחרונים. במטמון עצמו לא נוגעים.
 func tailCopy(in []indicators.Candle, n int) []indicators.Candle {
 	if n > len(in) {
 		n = len(in)

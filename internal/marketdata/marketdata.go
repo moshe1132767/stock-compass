@@ -1,4 +1,12 @@
-// Package marketdata מושך נתוני מניות ממקורות חיצוניים (Twelve Data + Finnhub).
+// Package marketdata מושך נתוני מניות ממקורות חיצוניים.
+//
+// חלוקת התפקידים, אחרי שהמכסה של Twelve Data חנקה את האפליקציה:
+//   - נרות (היסטוריה + גרפים): Yahoo — בלי מפתח ובלי מכסה. Twelve Data רק כרשת ביטחון.
+//   - מחיר חי, שמות חברות, חיפוש: Finnhub — 60 בקשות לדקה, נדיב.
+//   - Twelve Data: 8 קרדיטים לדקה בלבד. נוגעים בו רק אם Yahoo נפל.
+//
+// הכלל שמנחה את כל הקובץ: בקשה של משתמש לעולם לא ממתינה בתור.
+// מי שממתין זה רק רענון רקע — שאף אחד לא רואה.
 package marketdata
 
 import (
@@ -16,30 +24,38 @@ import (
 	"stockcompass/internal/indicators"
 )
 
-// מכסת הספק בתוכנית החינמית: 8 קרדיטים לדקה. אנחנו עוצרים ב-7 כדי להשאיר אוויר.
 const (
-	rateMax    = 7
+	rateMax    = 7 // המכסה של Twelve Data היא 8 לדקה — עוצרים ב-7 כדי להשאיר אוויר
 	rateWindow = time.Minute
-	// סבלנות התור: חלון מלא ועוד קצת — כך בקשה שנתקעת בדקה עמוסה תמיד תספיק
-	// להיכנס לחלון הבא. עדיף גרף שנטען לאט מגרף שנכשל.
-	rateWait = 70 * time.Second
 )
 
-// ErrBusy — נגמרה המכסה לדקה הזו ולא נפנה מקום בזמן סביר.
-var ErrBusy = errors.New("יותר מדי בקשות לספק הנתונים כרגע — נסה שוב בעוד רגע")
+// כמה זמן מותר לבקשה להמתין בתור אצל הספק:
+//
+//	WaitUser — משתמש מחכה מול המסך. כמעט ולא ממתינים; עדיף להגיש נתון מהמטמון.
+//	WaitBG   — רענון רקע. יכול להמתין בשקט, אף אחד לא מסתכל.
+const (
+	WaitUser = 1200 * time.Millisecond
+	WaitBG   = 90 * time.Second
+)
 
-// limiter — בלם קצב: לא נשלח לספק יותר מ-max בקשות בכל חלון זמן.
-// זה מה שמונע את השגיאה "נגמרו הקרדיטים לדקה הזו" — במקום להיכשל, מחכים בתור.
+// ErrBusy — הספק חסום כרגע. אף פעם לא מגיע למשתמש כשיש נתון במטמון.
+var ErrBusy = errors.New("ספק הנתונים עמוס כרגע")
+
+// limiter — בלם קצב: לא שולחים לספק יותר מ-max בקשות בחלון זמן.
+// reserve שומר מקומות פנויים לבקשות של משתמשים — רענוני רקע לא יגנבו להם את התור.
 type limiter struct {
 	mu   sync.Mutex
 	max  int // 0 = ברירת המחדל של Twelve Data
 	hits []time.Time
 }
 
-func (l *limiter) take(maxWait time.Duration) error {
+func (l *limiter) take(maxWait time.Duration, reserve int) error {
 	quota := l.max
 	if quota == 0 {
 		quota = rateMax
+	}
+	if quota -= reserve; quota < 1 {
+		quota = 1
 	}
 	deadline := time.Now().Add(maxWait)
 	for {
@@ -60,9 +76,8 @@ func (l *limiter) take(maxWait time.Duration) error {
 		sleep := rateWindow - now.Sub(l.hits[0]) + 100*time.Millisecond
 		l.mu.Unlock()
 		if time.Now().Add(sleep).After(deadline) {
-			return ErrBusy
+			return ErrBusy // המשתמש לא ימתין — הקורא יגיש מהמטמון
 		}
-		log.Printf("בלם קצב: המכסה מלאה — ממתין %s", sleep.Round(time.Second))
 		time.Sleep(sleep)
 	}
 }
@@ -71,30 +86,45 @@ type Client struct {
 	tdKey string
 	fhKey string
 	http  *http.Client
-	lim   limiter // הבלם של Twelve Data — 8 לדקה, הצוואר הצר
-	fhLim limiter // הבלם של Finnhub — 60 לדקה, הספק הנדיב
+	y     *yahoo
+	lim   limiter // Twelve Data — 8 לדקה, הצוואר הצר
+	fhLim limiter // Finnhub — 60 לדקה
 }
 
 func New(twelveDataKey, finnhubKey string) *Client {
-	return &Client{
+	c := &Client{
 		tdKey: twelveDataKey,
 		fhKey: finnhubKey,
-		http:  &http.Client{Timeout: 20 * time.Second},
-		fhLim: limiter{max: 55}, // קצת מתחת למכסה של 60/דקה
+		http:  &http.Client{Timeout: 15 * time.Second},
+		y:     newYahoo(),
+		fhLim: limiter{max: 55},
 	}
+	go c.y.prime() // מרימים את העוגייה כבר עכשיו — שהמשתמש הראשון לא ימתין לה
+	return c
 }
 
-// HasKey — האם הוגדר מפתח Twelve Data (חובה לפעולה).
-func (c *Client) HasKey() bool { return c.tdKey != "" }
-
-// HasFinnhub — האם הוגדר מפתח Finnhub (הספק של כל מה שבזמן אמת).
+func (c *Client) HasKey() bool     { return c.tdKey != "" }
 func (c *Client) HasFinnhub() bool { return c.fhKey != "" }
+
+// YahooUp — האם מקור הנרות הראשי עובד (לתצוגת מצב ולוגים).
+func (c *Client) YahooUp() bool { return c.y.up() }
+
+// CandleSource — מי מספק את הנרות בפועל: yahoo (הרצוי) או twelvedata (הגיבוי).
+func (c *Client) CandleSource() string { return c.y.source() }
 
 func pf(s string) float64 { f, _ := strconv.ParseFloat(s, 64); return f }
 
-// get — פנייה ל-Twelve Data, דרך הבלם הצר (8 לדקה).
-func (c *Client) get(u string, v any) error {
-	if err := c.lim.take(rateWait); err != nil {
+// bgReserve — רענון רקע (המתנה ארוכה) משאיר שני מקומות פנויים למשתמשים.
+func bgReserve(wait time.Duration) int {
+	if wait >= WaitBG {
+		return 2
+	}
+	return 0
+}
+
+// get — פנייה ל-Twelve Data דרך הבלם הצר.
+func (c *Client) get(u string, v any, wait time.Duration) error {
+	if err := c.lim.take(wait, bgReserve(wait)); err != nil {
 		return err
 	}
 	resp, err := c.http.Get(u)
@@ -105,9 +135,9 @@ func (c *Client) get(u string, v any) error {
 	return json.NewDecoder(resp.Body).Decode(v)
 }
 
-// getFH — פנייה ל-Finnhub, דרך הבלם הנדיב (55 לדקה).
+// getFH — פנייה ל-Finnhub דרך הבלם הנדיב.
 func (c *Client) getFH(u string, v any) error {
-	if err := c.fhLim.take(rateWait); err != nil {
+	if err := c.fhLim.take(WaitUser, 0); err != nil {
 		return err
 	}
 	resp, err := c.http.Get(u)
@@ -121,7 +151,6 @@ func (c *Client) getFH(u string, v any) error {
 	return json.NewDecoder(resp.Body).Decode(v)
 }
 
-// apiErr — הופך שגיאת מכסה של הספק להודעה ברורה בעברית.
 func apiErr(code int, msg, fallback string) error {
 	if code == 429 || strings.Contains(strings.ToLower(msg), "api credits") {
 		return ErrBusy
@@ -132,15 +161,17 @@ func apiErr(code int, msg, fallback string) error {
 	return fmt.Errorf("%s", msg)
 }
 
-// Meta — מידע על הנייר (סוג, בורסה) כפי שמגיע מ-time_series.
+// Meta — מידע על הנייר.
 type Meta struct {
 	Symbol   string `json:"symbol"`
 	Type     string `json:"type"`
 	Exchange string `json:"exchange"`
 	Currency string `json:"currency"`
+	Name     string `json:"-"` // Yahoo מחזיר את שם החברה באותה קריאה — בחינם
+	Full     bool   `json:"-"` // כל ההיסטוריה מיום ההנפקה כבר כאן
 }
 
-// Kind — מסווג "index" (מדד/סל) מול "stock" (מניה), לצורך הלשוניות.
+// Kind — מסווג "index" (מדד/סל) מול "stock".
 func (m Meta) Kind() string {
 	t := strings.ToLower(m.Type)
 	if strings.Contains(t, "index") || strings.Contains(t, "etf") || strings.Contains(t, "fund") {
@@ -164,28 +195,55 @@ type tdSeriesResp struct {
 	Code    int    `json:"code"`
 }
 
-// MaxCandles — כמות הנרות המרבית שהספק מחזיר בבקשה אחת (~20 שנות מסחר). נבדק מול ה-API.
+// MaxCandles — כמות הנרות המרבית ש-Twelve Data מחזיר בבקשה אחת.
 const MaxCandles = 5000
 
-// History — נרות יומיים (oldest-first) + מידע על הנייר. מושך את מלוא העומק הזמין.
-func (c *Client) History(symbol string) ([]indicators.Candle, Meta, error) {
-	return c.history(symbol, "")
+// histYears — כמה שנות היסטוריה מספיקות למסך הרגיל:
+// האינדיקטורים צריכים 300 ימי מסחר, והסימולציה הארוכה ביותר 5 שנים. 8 שנים מכסות הכל בנוחות,
+// והמנה קטנה פי עשרה מהיסטוריה מלאה — כלומר תשובה מיידית במקום הורדה של מגה-בייטים.
+const histYears = 8
+
+// History — היסטוריה יומית לשימוש היומיומי (8 שנים אחרונות, oldest-first).
+func (c *Client) History(symbol string, wait time.Duration) ([]indicators.Candle, Meta, error) {
+	return c.history(symbol, time.Now().AddDate(-histYears, 0, 0), wait)
 }
 
-// HistoryBefore — עמוד היסטוריה נוסף שמסתיים בתאריך נתון (לשליפת עבר רחוק יותר, לטווח "מקסימום").
-func (c *Client) HistoryBefore(symbol, endDate string) ([]indicators.Candle, error) {
-	cs, _, err := c.history(symbol, endDate)
+// HistoryAll — כל ההיסטוריה שקיימת, מיום ההנפקה (לגרף "מקסימום"). מנה כבדה — נמשכת ברקע.
+func (c *Client) HistoryAll(symbol string, wait time.Duration) ([]indicators.Candle, Meta, error) {
+	return c.history(symbol, time.Time{}, wait)
+}
+
+func (c *Client) history(symbol string, since time.Time, wait time.Duration) ([]indicators.Candle, Meta, error) {
+	cs, m, err := c.y.daily(symbol, since)
+	if err == nil && len(cs) > 30 {
+		return cs, m, nil
+	}
+	if err != nil && c.tdKey == "" {
+		return nil, Meta{}, err
+	}
+	if err != nil {
+		log.Printf("yahoo/היסטוריה %s נכשל (%v) — עובר ל-Twelve Data", symbol, err)
+	}
+	return c.tdHistory(symbol, "", wait)
+}
+
+// HistoryBefore — עמוד היסטוריה נוסף אחורה בזמן (רק במסלול הגיבוי של Twelve Data).
+func (c *Client) HistoryBefore(symbol, endDate string, wait time.Duration) ([]indicators.Candle, error) {
+	cs, _, err := c.tdHistory(symbol, endDate, wait)
 	return cs, err
 }
 
-func (c *Client) history(symbol, endDate string) ([]indicators.Candle, Meta, error) {
+func (c *Client) tdHistory(symbol, endDate string, wait time.Duration) ([]indicators.Candle, Meta, error) {
+	if c.tdKey == "" {
+		return nil, Meta{}, fmt.Errorf("אין נתונים עבור %s", symbol)
+	}
 	u := fmt.Sprintf("https://api.twelvedata.com/time_series?symbol=%s&interval=1day&outputsize=%d&apikey=%s",
 		url.QueryEscape(symbol), MaxCandles, url.QueryEscape(c.tdKey))
 	if endDate != "" {
 		u += "&end_date=" + url.QueryEscape(endDate)
 	}
 	var r tdSeriesResp
-	if err := c.get(u, &r); err != nil {
+	if err := c.get(u, &r, wait); err != nil {
 		return nil, Meta{}, err
 	}
 	if r.Status == "error" || len(r.Values) == 0 {
@@ -208,12 +266,50 @@ type Point struct {
 	C float64 `json:"c"`
 }
 
-// Series — סדרת מחירים לגרף (oldest-first), לפי אינטרוול וכמות נקודות.
-func (c *Client) Series(symbol, interval string, outputsize int) ([]Point, error) {
+// intradaySpec — איך כל טווח נראה אצל כל ספק.
+var intradaySpec = map[string]struct {
+	yRange, yInterval string
+	tdInterval        string
+	tdSize            int
+	keepLast          int // כמה נקודות אחרונות להשאיר (0 = הכל)
+}{
+	"1h": {"1d", "1m", "1min", 60, 60},
+	"1d": {"1d", "5m", "5min", 78, 0},
+	"1w": {"5d", "15m", "1h", 40, 0},
+}
+
+// Intraday — נקודות לגרף תוך-יומי. Yahoo קודם, Twelve Data כגיבוי.
+func (c *Client) Intraday(symbol, rng string, wait time.Duration) ([]Point, error) {
+	spec, ok := intradaySpec[rng]
+	if !ok {
+		spec = intradaySpec["1d"]
+	}
+
+	cs, _, err := c.y.chart(symbol, "range="+spec.yRange+"&interval="+spec.yInterval, false)
+	if err == nil && len(cs) > 1 {
+		if spec.keepLast > 0 && len(cs) > spec.keepLast {
+			cs = cs[len(cs)-spec.keepLast:]
+		}
+		pts := make([]Point, 0, len(cs))
+		for _, k := range cs {
+			pts = append(pts, Point{T: k.Date, C: k.Close})
+		}
+		return pts, nil
+	}
+	if c.tdKey == "" {
+		if err == nil {
+			err = fmt.Errorf("אין נתוני גרף עבור %s", symbol)
+		}
+		return nil, err
+	}
+	return c.tdSeries(symbol, spec.tdInterval, spec.tdSize, wait)
+}
+
+func (c *Client) tdSeries(symbol, interval string, outputsize int, wait time.Duration) ([]Point, error) {
 	u := fmt.Sprintf("https://api.twelvedata.com/time_series?symbol=%s&interval=%s&outputsize=%d&apikey=%s",
 		url.QueryEscape(symbol), url.QueryEscape(interval), outputsize, url.QueryEscape(c.tdKey))
 	var r tdSeriesResp
-	if err := c.get(u, &r); err != nil {
+	if err := c.get(u, &r, wait); err != nil {
 		return nil, err
 	}
 	if r.Status == "error" || len(r.Values) == 0 {
@@ -226,7 +322,7 @@ func (c *Client) Series(symbol, interval string, outputsize int) ([]Point, error
 	return pts, nil
 }
 
-// Quote — מחיר חי, סגירה קודמת, שם החברה, והאם השוק פתוח כרגע.
+// Quote — ציטוט Twelve Data (גיבוי בלבד; המחיר החי מגיע מ-Finnhub).
 type Quote struct {
 	Name       string
 	Price      float64
@@ -236,6 +332,9 @@ type Quote struct {
 }
 
 func (c *Client) Quote(symbol string) (Quote, error) {
+	if c.tdKey == "" {
+		return Quote{}, fmt.Errorf("אין ציטוט עבור %s", symbol)
+	}
 	u := fmt.Sprintf("https://api.twelvedata.com/quote?symbol=%s&apikey=%s",
 		url.QueryEscape(symbol), url.QueryEscape(c.tdKey))
 	var q struct {
@@ -248,7 +347,7 @@ func (c *Client) Quote(symbol string) (Quote, error) {
 		Message       string `json:"message"`
 		Code          int    `json:"code"`
 	}
-	if err := c.get(u, &q); err != nil {
+	if err := c.get(u, &q, WaitUser); err != nil {
 		return Quote{}, err
 	}
 	if q.Status == "error" || q.Close == "" {
@@ -260,16 +359,15 @@ func (c *Client) Quote(symbol string) (Quote, error) {
 	}, nil
 }
 
-// SearchItem — תוצאת חיפוש סימול (להשלמה אוטומטית).
+// SearchItem — תוצאת חיפוש סימול.
 type SearchItem struct {
 	Symbol   string `json:"symbol"`
 	Name     string `json:"name"`
 	Exchange string `json:"exchange"`
-	Kind     string `json:"kind"` // index / stock
+	Kind     string `json:"kind"`
 }
 
-// Search — חיפוש סימולים, מסונן לארה"ב בלבד.
-// עדיפות ל-Finnhub (המכסה הנדיבה); Twelve Data נשאר כגיבוי בלבד.
+// Search — חיפוש סימולים בארה"ב. Finnhub קודם (מכסה נדיבה), Twelve Data כגיבוי.
 func (c *Client) Search(q string) ([]SearchItem, error) {
 	if c.fhKey != "" {
 		if items, err := c.searchFH(q); err == nil {
@@ -279,7 +377,6 @@ func (c *Client) Search(q string) ([]SearchItem, error) {
 	return c.searchTD(q)
 }
 
-// searchFH — חיפוש דרך Finnhub: לא נוגע במכסה הצרה של Twelve Data.
 func (c *Client) searchFH(q string) ([]SearchItem, error) {
 	u := fmt.Sprintf("https://finnhub.io/api/v1/search?q=%s&exchange=US&token=%s",
 		url.QueryEscape(q), url.QueryEscape(c.fhKey))
@@ -308,7 +405,7 @@ func (c *Client) searchFH(q string) ([]SearchItem, error) {
 			kind = "index"
 		}
 		it := SearchItem{Symbol: d.Symbol, Name: d.Description, Kind: kind}
-		if strings.ToUpper(d.Symbol) == up { // התאמה מדויקת — ראשונה ברשימה
+		if strings.ToUpper(d.Symbol) == up {
 			out = append([]SearchItem{it}, out...)
 		} else {
 			out = append(out, it)
@@ -321,6 +418,9 @@ func (c *Client) searchFH(q string) ([]SearchItem, error) {
 }
 
 func (c *Client) searchTD(q string) ([]SearchItem, error) {
+	if c.tdKey == "" {
+		return []SearchItem{}, nil
+	}
 	u := fmt.Sprintf("https://api.twelvedata.com/symbol_search?symbol=%s&outputsize=30&apikey=%s",
 		url.QueryEscape(q), url.QueryEscape(c.tdKey))
 	var r struct {
@@ -332,7 +432,7 @@ func (c *Client) searchTD(q string) ([]SearchItem, error) {
 			Country        string `json:"country"`
 		} `json:"data"`
 	}
-	if err := c.get(u, &r); err != nil {
+	if err := c.get(u, &r, WaitUser); err != nil {
 		return nil, err
 	}
 	up := strings.ToUpper(strings.TrimSpace(q))
@@ -340,7 +440,6 @@ func (c *Client) searchTD(q string) ([]SearchItem, error) {
 	seen := map[string]bool{}
 	for _, d := range r.Data {
 		ex := strings.ToUpper(d.Exchange)
-		// ארה"ב בלבד, בורסות ראשיות (בלי OTC/פינק־שיטס)
 		if d.Country != "United States" || seen[d.Symbol] ||
 			strings.Contains(ex, "OTC") || strings.Contains(ex, "PINK") {
 			continue
@@ -350,7 +449,7 @@ func (c *Client) searchTD(q string) ([]SearchItem, error) {
 			Symbol: d.Symbol, Name: d.InstrumentName, Exchange: d.Exchange,
 			Kind: Meta{Type: d.InstrumentType}.Kind(),
 		}
-		if strings.ToUpper(d.Symbol) == up { // התאמה מדויקת — ראשונה ברשימה
+		if strings.ToUpper(d.Symbol) == up {
 			out = append([]SearchItem{it}, out...)
 		} else {
 			out = append(out, it)
@@ -362,7 +461,7 @@ func (c *Client) searchTD(q string) ([]SearchItem, error) {
 	return out, nil
 }
 
-// FHQuote — ציטוט מ-Finnhub: מחיר, סגירה קודמת, ומתי הייתה העסקה האחרונה
+// FHQuote — ציטוט Finnhub: מחיר, סגירה קודמת, וזמן העסקה האחרונה
 // (זה מה שמגלה אם השוק באמת נסחר עכשיו — גם בחגים שהשעון לא מכיר).
 type FHQuote struct {
 	Price     float64
@@ -370,7 +469,6 @@ type FHQuote struct {
 	LastTrade time.Time
 }
 
-// FinnhubQuote — המחיר העדכני מהספק הנדיב. לא נוגע במכסה של Twelve Data.
 func (c *Client) FinnhubQuote(symbol string) (FHQuote, error) {
 	if c.fhKey == "" {
 		return FHQuote{}, fmt.Errorf("אין מפתח Finnhub")
@@ -395,8 +493,8 @@ func (c *Client) FinnhubQuote(symbol string) (FHQuote, error) {
 	return fq, nil
 }
 
-// CompanyName — שם החברה. קודם Finnhub (חינם, נדיב); לקרנות/מדדים שאין להם פרופיל —
-// ציטוט Twelve Data, פעם אחת בלבד (השם ממילא לא משתנה, והשרת שומר אותו לתמיד).
+// CompanyName — שם החברה. Finnhub קודם; ואם אין לו פרופיל (קרנות/מדדים) — Twelve Data, פעם אחת.
+// ברוב המקרים לא נגיע לכאן בכלל: Yahoo כבר החזיר את השם יחד עם ההיסטוריה.
 func (c *Client) CompanyName(symbol string) (string, error) {
 	if c.fhKey != "" {
 		u := fmt.Sprintf("https://finnhub.io/api/v1/stock/profile2?symbol=%s&token=%s",
