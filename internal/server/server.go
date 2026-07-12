@@ -28,7 +28,8 @@ type Server struct {
 	hist   map[string]cachedHistory // היסטוריה יומית לכל סימול (עד ~20 שנה)
 	deep   map[string]cachedHistory // כל ההיסטוריה שקיימת — לטווח "מקסימום"
 	bt     map[string]cachedBT      // סימולציית עבר
-	quotes map[string]cachedQuote   // ציטוט חי, TTL קצר
+	quotes map[string]cachedQuote   // ציטוט Finnhub, TTL קצר
+	names  map[string]string        // שם חברה לכל סימול — לא משתנה, נשמר לתמיד
 	series map[string]cachedSeries  // סדרות גרף תוך-יומיות
 	search map[string]cachedSearch  // תוצאות חיפוש
 
@@ -47,7 +48,7 @@ type cachedBT struct {
 }
 type cachedQuote struct {
 	at time.Time
-	q  marketdata.Quote
+	q  marketdata.FHQuote
 }
 type cachedSeries struct {
 	at  time.Time
@@ -93,7 +94,8 @@ func ttl(open, closed time.Duration) time.Duration {
 	return closed
 }
 
-func quoteTTL() time.Duration { return ttl(5*time.Minute, 6*time.Hour) }
+// ציטוט Finnhub — המכסה שלו נדיבה (60/דקה), אפשר להרשות רעננות של 15 שניות
+func quoteTTL() time.Duration { return ttl(15*time.Second, 6*time.Hour) }
 
 func New(cfg config.Config) *Server {
 	s := &Server{
@@ -105,6 +107,7 @@ func New(cfg config.Config) *Server {
 		deep:    make(map[string]cachedHistory),
 		bt:      make(map[string]cachedBT),
 		quotes:  make(map[string]cachedQuote),
+		names:   make(map[string]string),
 		series:  make(map[string]cachedSeries),
 		search:  make(map[string]cachedSearch),
 		clients: make(map[*sseClient]bool),
@@ -187,8 +190,11 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	if len(candles) > 1 {
 		prevClose = candles[len(candles)-2].Close
 	}
-	name, marketOpen, exchange := symbol, false, meta.Exchange
+	name, exchange := s.companyName(symbol), meta.Exchange
+	marketOpen := marketHours()
 
+	// המחיר החי מגיע מ-Finnhub (המכסה הנדיבה) — Twelve Data לא נשאל בכלל.
+	// זמן העסקה האחרונה מגלה גם חגים: השעון אומר "פתוח" אבל אין מסחר → סגור.
 	if q, qerr := s.getQuote(symbol); qerr == nil {
 		if q.Price > 0 {
 			candles[len(candles)-1].Close = q.Price
@@ -196,15 +202,11 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		if q.PrevClose > 0 {
 			prevClose = q.PrevClose
 		}
-		if q.Name != "" {
-			name = q.Name
+		if !q.LastTrade.IsZero() {
+			marketOpen = marketHours() && time.Since(q.LastTrade) < 30*time.Minute
 		}
-		if q.Exchange != "" {
-			exchange = q.Exchange
-		}
-		marketOpen = q.MarketOpen
 	}
-	// המחיר מהזרם החי הוא הטרי ביותר — גובר על הציטוט
+	// המחיר מהזרם החי הוא הטרי ביותר — גובר על הכול
 	if lp, ok := s.feed.Price(symbol); ok && lp > 0 {
 		candles[len(candles)-1].Close = lp
 	}
@@ -353,7 +355,7 @@ func (s *Server) livePayload(sym string, price float64) liveUpdate {
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	if len(q) < 1 || !s.md.HasKey() {
+	if len(q) < 1 || (!s.md.HasFinnhub() && !s.md.HasKey()) {
 		writeJSON(w, http.StatusOK, []marketdata.SearchItem{})
 		return
 	}
@@ -480,7 +482,7 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 
 // ---------- מטמונים ----------
 
-func (s *Server) getQuote(symbol string) (marketdata.Quote, error) {
+func (s *Server) getQuote(symbol string) (marketdata.FHQuote, error) {
 	s.mu.Lock()
 	if c, ok := s.quotes[symbol]; ok && time.Since(c.at) < quoteTTL() {
 		s.mu.Unlock()
@@ -488,9 +490,9 @@ func (s *Server) getQuote(symbol string) (marketdata.Quote, error) {
 	}
 	s.mu.Unlock()
 
-	q, err := s.md.Quote(symbol)
+	q, err := s.md.FinnhubQuote(symbol)
 	if err != nil {
-		return marketdata.Quote{}, err
+		return marketdata.FHQuote{}, err
 	}
 	s.mu.Lock()
 	s.quotes[symbol] = cachedQuote{at: time.Now(), q: q}
@@ -498,11 +500,30 @@ func (s *Server) getQuote(symbol string) (marketdata.Quote, error) {
 	return q, nil
 }
 
-func (s *Server) cachedQuote(symbol string) (marketdata.Quote, bool) {
+func (s *Server) cachedQuote(symbol string) (marketdata.FHQuote, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c, ok := s.quotes[symbol]
 	return c.q, ok
+}
+
+// companyName — שם החברה מהמטמון הקבוע; בפעם הראשונה נשאל את הספקים ושומרים לתמיד.
+func (s *Server) companyName(symbol string) string {
+	s.mu.Lock()
+	if n, ok := s.names[symbol]; ok {
+		s.mu.Unlock()
+		return n
+	}
+	s.mu.Unlock()
+
+	n, err := s.md.CompanyName(symbol)
+	if err != nil || n == "" {
+		return symbol // לא שווה להיכשל בגלל שם — ננסה שוב בפעם הבאה
+	}
+	s.mu.Lock()
+	s.names[symbol] = n
+	s.mu.Unlock()
+	return n
 }
 
 // historyRaw — ההיסטוריה היומית מהמטמון (או מהספק). הפרוסה המוחזרת משותפת — לקריאה בלבד!
