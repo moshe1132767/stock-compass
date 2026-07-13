@@ -611,23 +611,60 @@
     svg.addEventListener('pointerdown',at); svg.addEventListener('pointermove',function(e){ if(e.buttons||e.pointerType==='touch') at(e); });
     svg.addEventListener('pointerup',off); svg.addEventListener('pointerleave',off); svg.addEventListener('pointercancel',off);
   }
+  // כל טווחי הגרף נשמרים אצלנו בצד, כך שמעבר בין לשוניות הוא מיידי — בלי שום פנייה לשרת.
+  // ברגע שנפתחת מניה, שאר הטווחים נמשכים ברקע, כדי שיהיו מוכנים עוד לפני שלוחצים עליהם.
+  var chartCache={}, CHART_FRESH=60000;
+  function ckey(sym,rng){ return sym+'|'+rng; }
+
+  function drawChart(sym,rng,r){
+    var box=document.getElementById('chartBox');
+    if(!box || state.detail!==sym || state.range!==rng) return;
+    if(!r || !r.ok || !r.points || r.points.length<2){
+      box.innerHTML='<div class="chart-msg">'+esc((r&&r.reason)||'אין נתוני גרף לטווח הזה.')+'</div>'; return;
+    }
+    box.innerHTML=chartSVG(r.points);
+    wireChart(r.points);
+  }
+  var chartFlight={};
+  function fetchRange(sym,rng,quiet){
+    var k=ckey(sym,rng), p=chartFlight[k];
+    if(!p){                                 // אם הרקע כבר מושך את הטווח הזה — מצטרפים אליו
+      p=apiSeries(sym,rng).then(function(r){
+        delete chartFlight[k];
+        if(r && r.ok && r.points && r.points.length>1) chartCache[k]={at:Date.now(), r:r};
+        return r;
+      }, function(e){ delete chartFlight[k]; throw e; });
+      chartFlight[k]=p;
+    }
+    return p.then(function(r){ if(!quiet) drawChart(sym,rng,r); },
+      function(){
+        if(!quiet && state.detail===sym && state.range===rng){
+          var box=document.getElementById('chartBox');
+          if(box) box.innerHTML='<div class="chart-msg">שגיאה בטעינת הגרף.</div>';
+        }
+      });
+  }
   function loadChart(sym,rng){
     state.range=rng;
     var box=document.getElementById('chartBox');
     if(!box) return;
-    box.innerHTML='<div class="sk" style="height:124px"></div>';
     Array.prototype.forEach.call(document.querySelectorAll('.rg'), function(b){
       b.classList.toggle('active', b.getAttribute('data-rg')===rng);
     });
-    apiSeries(sym,rng).then(function(r){
-      if(state.detail!==sym || state.range!==rng) return;
-      if(!r.ok || !r.points || r.points.length<2){
-        box.innerHTML='<div class="chart-msg">'+esc(r.reason||'אין נתוני גרף לטווח הזה.')+'</div>'; return;
-      }
-      box.innerHTML=chartSVG(r.points);
-      wireChart(r.points);
-    }).catch(function(){
-      if(state.detail===sym) box.innerHTML='<div class="chart-msg">שגיאה בטעינת הגרף.</div>';
+    var c=chartCache[ckey(sym,rng)];
+    if(c){                                  // כבר אצלנו — מציירים מיד, בלי שלד ובלי המתנה
+      drawChart(sym,rng,c.r);
+      if(state.marketOpen && Date.now()-c.at>CHART_FRESH) fetchRange(sym,rng,true);
+      return;
+    }
+    box.innerHTML='<div class="sk" style="height:124px"></div>';
+    fetchRange(sym,rng,false);
+  }
+  // מושכים ברקע את כל שאר הטווחים של המניה שנפתחה
+  function prefetchRanges(sym){
+    RANGES.forEach(function(x){
+      if(x.k===state.range || chartCache[ckey(sym,x.k)]) return;
+      fetchRange(sym,x.k,true);
     });
   }
 
@@ -792,6 +829,7 @@
     document.getElementById('backBtn').addEventListener('click', function(){ history.back(); });
     loadChart(sym, state.range);
     loadBacktest(sym);
+    prefetchRanges(sym); // שאר הטווחים נטענים ברקע — הלחיצה עליהם תהיה מיידית
   }
   function closeDetail(){
     state.detail=null;
