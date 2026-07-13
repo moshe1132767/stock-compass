@@ -269,17 +269,24 @@ func obvTrend(closes, volumes []float64) (rising bool, ok bool) {
 	return obvNow > obvMa, true
 }
 
-func momentum12m(closes []float64) (ret float64, approx bool, ok bool) {
+// momentum12m — התשואה בפועל ב-12 החודשים האחרונים (252 ימי מסחר).
+//
+// היה כאן חישוב אחר: הנוסחה האקדמית שמדלגת על החודש האחרון (12-1). היא לגיטימית
+// במחקר, אבל היא החזירה מספר אחר מזה שהכיתוב הבטיח — למשל באפל 37.6% במקום 49.3%
+// שהמניה באמת עשתה. מספר שלא מסתדר עם המציאות שובר את האמון בכל האפליקציה,
+// ולכן כאן מחשבים בדיוק את מה שכתוב: תשואה מלפני שנה ועד היום.
+//
+// months מחזיר כמה חודשים הנתון באמת מכסה (למניות צעירות שאין להן שנה שלמה).
+func momentum12m(closes []float64) (ret float64, months float64, ok bool) {
 	n := len(closes)
-	if n < 252 {
-		if n < 40 {
-			return 0, false, false
-		}
-		return closes[n-1]/closes[0] - 1, true, true
+	if n < 40 {
+		return 0, 0, false
 	}
-	end := closes[n-1-21]
-	start := closes[n-1-252]
-	return end/start - 1, false, true
+	back := 252
+	if back > n-1 {
+		back = n - 1
+	}
+	return closes[n-1]/closes[n-1-back] - 1, float64(back) / 21.0, true
 }
 
 // ---------- החישוב הראשי ----------
@@ -304,7 +311,6 @@ func Analyze(candles []Candle) Result {
 	var inds []Indicator
 
 	sma200, ok200 := sma(closes, 200)
-	sma150, _ := sma(closes, 150)
 	if ok200 {
 		dist := price/sma200 - 1
 		score := clamp(dist/0.10, -1, 1)
@@ -314,7 +320,6 @@ func Analyze(candles []Candle) Result {
 		}
 		inds = append(inds, Indicator{"sma200", "מחיר מול ממוצע 200 יום", 2.0, score, labelFromScore(score),
 			fmt.Sprintf("%s הממוצע ב-%.1f%%", pos, math.Abs(dist)*100)})
-		_ = sma150
 	}
 
 	sma50, ok50 := sma(closes, 50)
@@ -328,14 +333,15 @@ func Analyze(candles []Candle) Result {
 		inds = append(inds, Indicator{"goldencross", "צלב זהב (ממוצע 50 מול 200)", 2.0, score, labelFromScore(score), detail})
 	}
 
-	if ret, approx, ok := momentum12m(closes); ok {
+	if ret, months, ok := momentum12m(closes); ok {
 		score := clamp(ret/0.30, -1, 1)
 		name := "מומנטום 12 חודשים"
-		if approx {
-			name += " (מקורב)"
+		detail := fmt.Sprintf("תשואה של %.1f%% בשנה האחרונה", ret*100)
+		if months < 11.5 { // מניה צעירה — אומרים בדיוק מה כן נמדד, בלי להבטיח שנה
+			name = fmt.Sprintf("מומנטום %.0f חודשים", months)
+			detail = fmt.Sprintf("תשואה של %.1f%% מאז תחילת המסחר (%.0f חודשים בלבד)", ret*100, months)
 		}
-		inds = append(inds, Indicator{"momentum", name, 2.0, score, labelFromScore(score),
-			fmt.Sprintf("תשואה של %.1f%% בשנה האחרונה", ret*100)})
+		inds = append(inds, Indicator{"momentum", name, 2.0, score, labelFromScore(score), detail})
 	}
 
 	if m, ok := macd(closes, 12, 26, 9); ok {

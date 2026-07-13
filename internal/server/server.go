@@ -270,30 +270,31 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, indicators.Result{OK: false, Symbol: symbol, Reason: err.Error()})
 		return
 	}
-	candles := tailCopy(full, indicators.Window) // עותק — כאן משנים את מחיר הסגירה האחרון
+	candles := tailCopy(full, indicators.Window) // עותק — כאן משלבים את המחיר החי
 	s.feed.Subscribe(symbol)                     // מרגע שהסתכלת על מניה — היא נכנסת לזרם החי
 
-	prevClose := candles[len(candles)-1].Close
-	if len(candles) > 1 {
-		prevClose = candles[len(candles)-2].Close
-	}
 	marketOpen := marketHours()
+	price, prevQuote := 0.0, 0.0
 
 	// המחיר החי מגיע מ-Finnhub (מכסה נדיבה). זמן העסקה האחרונה מגלה גם חגים.
 	if q, ok := s.getQuote(symbol); ok {
-		if q.Price > 0 {
-			candles[len(candles)-1].Close = q.Price
-		}
-		if q.PrevClose > 0 {
-			prevClose = q.PrevClose
-		}
+		price, prevQuote = q.Price, q.PrevClose
 		if !q.LastTrade.IsZero() {
 			marketOpen = marketHours() && time.Since(q.LastTrade) < 30*time.Minute
 		}
 	}
 	// המחיר מהזרם החי הוא הטרי ביותר — גובר על הכול
 	if lp, ok := s.feed.Price(symbol); ok && lp > 0 {
-		candles[len(candles)-1].Close = lp
+		price = lp
+	}
+	candles = applyLive(candles, price, marketOpen)
+
+	prevClose := candles[len(candles)-1].Close
+	if len(candles) > 1 {
+		prevClose = candles[len(candles)-2].Close // הסגירה של יום המסחר הקודם
+	}
+	if prevQuote > 0 {
+		prevClose = prevQuote
 	}
 
 	res := indicators.Analyze(candles)
@@ -415,11 +416,12 @@ func (s *Server) livePayload(sym string, price float64) liveUpdate {
 	if !ok || len(candles) < 2 {
 		return u
 	}
+	candles = applyLive(candles, price, marketHours())
+
 	prev := candles[len(candles)-2].Close
 	if q, ok := s.cachedQuote(sym); ok && q.PrevClose > 0 {
 		prev = q.PrevClose
 	}
-	candles[len(candles)-1].Close = price
 
 	res := indicators.Analyze(candles)
 	ag := res.Agreement
@@ -848,6 +850,41 @@ func (s *Server) cachedCandles(symbol string) ([]indicators.Candle, bool) {
 		return nil, false
 	}
 	return tailCopy(c.candles, indicators.Window), true
+}
+
+// nyToday — התאריך של היום בבורסה (ניו-יורק), לא לפי השעון שלנו.
+func nyToday() string {
+	ny, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return time.Now().Format("2006-01-02")
+	}
+	return time.Now().In(ny).Format("2006-01-02")
+}
+
+// applyLive — משלב את המחיר החי בתוך סדרת הנרות.
+//
+// אם הנר האחרון הוא של היום — מעדכנים את הסגירה שלו (וגם את השיא/שפל, אם המחיר חרג).
+// אם השוק פתוח אבל עדיין אין נר להיום (קורה בדקות הראשונות של המסחר, לפני שהספק
+// פותח אותו) — מוסיפים נר חדש. הגרסה הקודמת פשוט דרסה את הסגירה של אתמול,
+// וזה זייף לרגע את כל האינדיקטורים: יום מסחר שלם היה נעלם מההיסטוריה.
+func applyLive(candles []indicators.Candle, price float64, open bool) []indicators.Candle {
+	if price <= 0 || len(candles) == 0 {
+		return candles
+	}
+	last := &candles[len(candles)-1]
+	if !open || last.Date == nyToday() {
+		last.Close = price
+		if price > last.High {
+			last.High = price
+		}
+		if price < last.Low {
+			last.Low = price
+		}
+		return candles
+	}
+	return append(candles, indicators.Candle{
+		Date: nyToday(), Open: price, High: price, Low: price, Close: price,
+	})
 }
 
 // tailCopy — עותק בר-שינוי של N הנרות האחרונים. במטמון עצמו לא נוגעים.
