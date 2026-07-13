@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -82,8 +83,19 @@ func (y *yahoo) source() string {
 	return "—"
 }
 
+// crumbNow — העוגייה שכבר בידינו, אם יש. לא חוסם ולא מרים כלום:
+// משתמש לעולם לא ימתין להרמת עוגייה. אם אין — פונים ליאהו בלעדיה, וזה בדרך כלל עובד.
+func (y *yahoo) crumbNow() string {
+	y.mu.Lock()
+	defer y.mu.Unlock()
+	if y.crumb != "" && time.Since(y.primed) < time.Hour {
+		return y.crumb
+	}
+	return ""
+}
+
 // prime — Yahoo דורש עוגייה + "crumb" לפני שהוא עונה. מרימים אותם פעם בשעה.
-// pmu מבטיח שרק גורם אחד מרים אותם: אחרת מטח בקשות היה גורר מטח הרמות — ויאהו היה חוסם.
+// רץ ברקע בעליית השרת, ושוב רק אם בקשה נדחתה. pmu מבטיח שרק גורם אחד מרים אותם.
 func (y *yahoo) prime() string {
 	y.pmu.Lock()
 	defer y.pmu.Unlock()
@@ -96,11 +108,12 @@ func (y *yahoo) prime() string {
 	}
 	y.mu.Unlock()
 
-	// שלב 1: עוגיות
+	// שלב 1: עוגיות. timeout קצר — אם יאהו לא עונה, לא נתקעים.
+	quick := &http.Client{Timeout: 5 * time.Second, Jar: y.http.Jar}
 	for _, u := range []string{"https://fc.yahoo.com/", "https://finance.yahoo.com/"} {
 		req, _ := http.NewRequest("GET", u, nil)
 		req.Header.Set("User-Agent", yahooUA)
-		if resp, err := y.http.Do(req); err == nil {
+		if resp, err := quick.Do(req); err == nil {
 			io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<12))
 			resp.Body.Close()
 		}
@@ -108,7 +121,7 @@ func (y *yahoo) prime() string {
 	// שלב 2: crumb
 	req, _ := http.NewRequest("GET", "https://query2.finance.yahoo.com/v1/test/getcrumb", nil)
 	req.Header.Set("User-Agent", yahooUA)
-	resp, err := y.http.Do(req)
+	resp, err := quick.Do(req)
 	if err != nil {
 		return ""
 	}
@@ -121,6 +134,7 @@ func (y *yahoo) prime() string {
 	y.mu.Lock()
 	y.crumb, y.primed = cr, time.Now()
 	y.mu.Unlock()
+	log.Printf("yahoo: עוגייה מוכנה")
 	return cr
 }
 
@@ -141,7 +155,11 @@ func (y *yahoo) do(u string) (*http.Response, error) {
 	var last error
 	for try := 0; try < 2; try++ {
 		if try > 0 {
-			time.Sleep(500 * time.Millisecond)
+			// נדחינו. עכשיו — ורק עכשיו — שווה להרים עוגייה ולנסות פעם אחת נוספת.
+			if cr := y.prime(); cr != "" && !strings.Contains(u, "crumb=") {
+				u += "&crumb=" + url.QueryEscape(cr)
+			}
+			time.Sleep(300 * time.Millisecond)
 		}
 		req, _ := http.NewRequest("GET", u, nil)
 		req.Header.Set("User-Agent", yahooUA)
@@ -203,7 +221,7 @@ func (y *yahoo) chart(symbol, query string, daily bool) ([]indicators.Candle, Me
 	}
 	u := fmt.Sprintf("https://query2.finance.yahoo.com/v8/finance/chart/%s?%s",
 		url.PathEscape(symbol), query)
-	if cr := y.prime(); cr != "" {
+	if cr := y.crumbNow(); cr != "" {
 		u += "&crumb=" + url.QueryEscape(cr)
 	}
 	resp, err := y.do(u)
