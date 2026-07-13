@@ -6,6 +6,7 @@
 package server
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -158,7 +159,36 @@ func (s *Server) Start() error {
 	addr := ":" + s.cfg.Port
 	log.Printf("trade מאזין על %s (web=%s, נרות=yahoo, גיבוי=%v, זרם חי=%v)",
 		addr, s.cfg.WebDir, s.md.HasKey(), s.feed.Enabled())
-	return http.ListenAndServe(addr, s.logRequests(s.mux))
+	return http.ListenAndServe(addr, s.compress(s.logRequests(s.mux)))
+}
+
+// compress — דוחס את התשובות. הדף עצמו יורד פי ארבעה יותר מהר, וזה מורגש בעיקר בסלולר.
+// הזרם החי יוצא מן הכלל: דחיסה הייתה תוקעת אותו בבאפר במקום לדחוף כל עסקה מיד.
+func (s *Server) compress(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/stream" || !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Add("Vary", "Accept-Encoding")
+		gz := gzip.NewWriter(w)
+		defer gz.Close()
+		next.ServeHTTP(gzipWriter{ResponseWriter: w, gz: gz}, r)
+	})
+}
+
+type gzipWriter struct {
+	http.ResponseWriter
+	gz *gzip.Writer
+}
+
+func (g gzipWriter) Write(b []byte) (int, error) { return g.gz.Write(b) }
+
+// WriteHeader — האורך המקורי כבר לא נכון אחרי הדחיסה, אז מסירים אותו.
+func (g gzipWriter) WriteHeader(code int) {
+	g.ResponseWriter.Header().Del("Content-Length")
+	g.ResponseWriter.WriteHeader(code)
 }
 
 func (s *Server) logRequests(next http.Handler) http.Handler {
