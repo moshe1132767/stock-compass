@@ -64,8 +64,14 @@ var defs = []struct {
 	{"5y", "5 שנים", 1260},
 }
 
-// Run — מריץ את הסימולציה על היסטוריית נרות יומית (oldest-first).
+// Run — מריץ את הסימולציה על היסטוריית נרות יומית (oldest-first), בהרכב הציון של האפליקציה.
 func Run(candles []indicators.Candle) Result {
+	return RunWith(candles, indicators.Default)
+}
+
+// RunWith — אותה סימולציה בדיוק, עם הרכב ציון אחר. זה מה שמאפשר למדוד איזה הרכב
+// באמת מנצח (research_test.go) במקום להחליט לפי תחושה.
+func RunWith(candles []indicators.Candle, w indicators.Weights) Result {
 	n := len(candles)
 	res := Result{Start: StartCap, Periods: make([]Period, 0, len(defs))}
 
@@ -92,7 +98,7 @@ func Run(candles []indicators.Candle) Result {
 	// הציון שהאפליקציה הייתה מציגה בסוף כל יום
 	score := make([]int, n)
 	for i := lo; i < n; i++ {
-		score[i] = indicators.Analyze(candles[i-indicators.Window+1 : i+1]).Score100
+		score[i] = indicators.AnalyzeWith(candles[i-indicators.Window+1:i+1], w).Score100
 	}
 
 	// pos[i] — האם החזקנו את המניה ביום i (הוחלט לפי הציון בסגירת i-1)

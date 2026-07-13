@@ -269,12 +269,8 @@ func obvTrend(closes, volumes []float64) (rising bool, ok bool) {
 	return obvNow > obvMa, true
 }
 
-// momentum12m — התשואה בפועל ב-12 החודשים האחרונים (252 ימי מסחר).
-//
-// היה כאן חישוב אחר: הנוסחה האקדמית שמדלגת על החודש האחרון (12-1). היא לגיטימית
-// במחקר, אבל היא החזירה מספר אחר מזה שהכיתוב הבטיח — למשל באפל 37.6% במקום 49.3%
-// שהמניה באמת עשתה. מספר שלא מסתדר עם המציאות שובר את האמון בכל האפליקציה,
-// ולכן כאן מחשבים בדיוק את מה שכתוב: תשואה מלפני שנה ועד היום.
+// momentum12m — התשואה בפועל ב-12 החודשים האחרונים (252 ימי מסחר). זה המספר שמוצג
+// למשתמש, כי זה מה שהוא רואה בכל אתר פיננסי וזה מה שמאפשר לו לוודא שהאפליקציה לא משקרת.
 //
 // months מחזיר כמה חודשים הנתון באמת מכסה (למניות צעירות שאין להן שנה שלמה).
 func momentum12m(closes []float64) (ret float64, months float64, ok bool) {
@@ -289,9 +285,49 @@ func momentum12m(closes []float64) (ret float64, months float64, ok bool) {
 	return closes[n-1]/closes[n-1-back] - 1, float64(back) / 21.0, true
 }
 
+// momentum12m1 — מומנטום "12 פחות 1": התשואה מלפני שנה ועד לפני חודש.
+//
+// זה הסיגנל שמניע את הציון, ולא התשואה המלאה. הסיבה אינה אסתטית: דילוג על החודש
+// האחרון הוא בדיוק מה שמדד ג'גדיש-טיטמן (1993) מודד, והוא נשאר מובהק 30 שנה מחוץ
+// למדגם וביותר מ-40 מדינות. החודש האחרון נוטה להיפוך קצר-טווח, ולכן הוא מוסיף רעש
+// ולא אות. המספר המוצג למשתמש נשאר התשואה האמיתית — אבל מה שמכריע הוא זה.
+func momentum12m1(closes []float64) (ret float64, ok bool) {
+	n := len(closes)
+	if n < 274 { // 252 + 21 + 1
+		return 0, false
+	}
+	return closes[n-1-21]/closes[n-1-252] - 1, true
+}
+
+// ---------- הרכב הציון ----------
+
+// Weights — כמה משקל יש לכל אינדיקטור בציון הסופי. משקל 0 = האינדיקטור עדיין מוצג
+// למשתמש, אבל לא משפיע על ההמלצה.
+//
+// למה זה בכלל ניתן להחלפה: כדי שאפשר יהיה *למדוד* איזה הרכב באמת מנצח, על עשרות
+// מניות ולאורך שנים, במקום להחליט לפי תחושה. ראה research_test.go.
+type Weights struct {
+	SMA200      float64
+	GoldenCross float64
+	Momentum    float64
+	MACD        float64
+	RSI         float64
+	Stoch       float64
+	Bollinger   float64
+	OBV         float64
+}
+
+// Default — ההרכב שהאפליקציה משתמשת בו בפועל.
+var Default = Weights{
+	SMA200: 2, GoldenCross: 2, Momentum: 2, MACD: 1.5,
+	RSI: 1, Stoch: 1, Bollinger: 1, OBV: 1,
+}
+
 // ---------- החישוב הראשי ----------
 
-func Analyze(candles []Candle) Result {
+func Analyze(candles []Candle) Result { return AnalyzeWith(candles, Default) }
+
+func AnalyzeWith(candles []Candle, w Weights) Result {
 	if len(candles) < 40 {
 		return Result{OK: false, Reason: "אין מספיק היסטוריה (צריך לפחות ~40 ימי מסחר)."}
 	}
@@ -318,7 +354,7 @@ func Analyze(candles []Candle) Result {
 		if dist >= 0 {
 			pos = "מעל"
 		}
-		inds = append(inds, Indicator{"sma200", "מחיר מול ממוצע 200 יום", 2.0, score, labelFromScore(score),
+		inds = append(inds, Indicator{"sma200", "מחיר מול ממוצע 200 יום", w.SMA200, score, labelFromScore(score),
 			fmt.Sprintf("%s הממוצע ב-%.1f%%", pos, math.Abs(dist)*100)})
 	}
 
@@ -330,18 +366,25 @@ func Analyze(candles []Candle) Result {
 		if sma50 >= sma200 {
 			detail = "הקצר מעל הארוך — מגמת עלייה"
 		}
-		inds = append(inds, Indicator{"goldencross", "צלב זהב (ממוצע 50 מול 200)", 2.0, score, labelFromScore(score), detail})
+		inds = append(inds, Indicator{"goldencross", "צלב זהב (ממוצע 50 מול 200)", w.GoldenCross, score, labelFromScore(score), detail})
 	}
 
 	if ret, months, ok := momentum12m(closes); ok {
-		score := clamp(ret/0.30, -1, 1)
+		// הציון נקבע לפי 12-1 (הסיגנל שיש לו ראיות), אבל המספר שמוצג הוא התשואה
+		// האמיתית — כדי שהמשתמש יוכל לאמת אותו מול כל אתר.
+		sig := ret
 		name := "מומנטום 12 חודשים"
 		detail := fmt.Sprintf("תשואה של %.1f%% בשנה האחרונה", ret*100)
-		if months < 11.5 { // מניה צעירה — אומרים בדיוק מה כן נמדד, בלי להבטיח שנה
+		if s121, ok := momentum12m1(closes); ok {
+			sig = s121
+			detail = fmt.Sprintf("תשואה של %.1f%% בשנה האחרונה (הציון נקבע לפי %.1f%% — בלי החודש האחרון, שנוטה להיפוך)",
+				ret*100, s121*100)
+		} else if months < 11.5 { // מניה צעירה — לא מבטיחים שנה שלא קיימת
 			name = fmt.Sprintf("מומנטום %.0f חודשים", months)
 			detail = fmt.Sprintf("תשואה של %.1f%% מאז תחילת המסחר (%.0f חודשים בלבד)", ret*100, months)
 		}
-		inds = append(inds, Indicator{"momentum", name, 2.0, score, labelFromScore(score), detail})
+		score := clamp(sig/0.30, -1, 1)
+		inds = append(inds, Indicator{"momentum", name, w.Momentum, score, labelFromScore(score), detail})
 	}
 
 	if m, ok := macd(closes, 12, 26, 9); ok {
@@ -360,7 +403,7 @@ func Analyze(candles []Candle) Result {
 		if m.hist > 0 {
 			detail = "מומנטום חיובי (קו מעל האות)"
 		}
-		inds = append(inds, Indicator{"macd", "MACD", 1.5, score, labelFromScore(score), detail})
+		inds = append(inds, Indicator{"macd", "MACD", w.MACD, score, labelFromScore(score), detail})
 	}
 
 	if r, ok := rsi(closes, 14); ok {
@@ -378,7 +421,7 @@ func Analyze(candles []Candle) Result {
 		default:
 			detail = fmt.Sprintf("ניטרלי (%.0f)", r)
 		}
-		inds = append(inds, Indicator{"rsi", "RSI (עוצמה יחסית)", 1.0, score, labelFromScore(score), detail})
+		inds = append(inds, Indicator{"rsi", "RSI (עוצמה יחסית)", w.RSI, score, labelFromScore(score), detail})
 	}
 
 	if k, _, ok := stochastic(highs, lows, closes, 14, 3); ok {
@@ -392,7 +435,7 @@ func Analyze(candles []Candle) Result {
 		default:
 			detail = fmt.Sprintf("ניטרלי (%.0f)", k)
 		}
-		inds = append(inds, Indicator{"stoch", "סטוכסטי", 1.0, score, labelFromScore(score), detail})
+		inds = append(inds, Indicator{"stoch", "סטוכסטי", w.Stoch, score, labelFromScore(score), detail})
 	}
 
 	if bb, ok := bollinger(closes, 20, 2); ok {
@@ -406,7 +449,7 @@ func Analyze(candles []Candle) Result {
 		default:
 			detail = "בתוך הרצועה הרגילה"
 		}
-		inds = append(inds, Indicator{"bollinger", "רצועות בולינגר", 1.0, score, labelFromScore(score), detail})
+		inds = append(inds, Indicator{"bollinger", "רצועות בולינגר", w.Bollinger, score, labelFromScore(score), detail})
 	}
 
 	if rising, ok := obvTrend(closes, vols); ok {
@@ -416,15 +459,19 @@ func Analyze(candles []Candle) Result {
 			score = 0.6
 			detail = "כסף נכנס למניה"
 		}
-		inds = append(inds, Indicator{"obv", "נפח וזרימת כסף (OBV)", 1.0, score, labelFromScore(score), detail})
+		inds = append(inds, Indicator{"obv", "נפח וזרימת כסף (OBV)", w.OBV, score, labelFromScore(score), detail})
 	}
 
-	// שקלול
+	// שקלול. אינדיקטור שמשקלו 0 עדיין מוצג למשתמש, אבל אינו מכריע ואינו נספר בהסכמה.
 	wsum, wtot := 0.0, 0.0
-	buys, sells := 0, 0
+	buys, sells, counted := 0, 0, 0
 	for _, ind := range inds {
+		if ind.Weight <= 0 {
+			continue
+		}
 		wsum += ind.Score * ind.Weight
 		wtot += ind.Weight
+		counted++
 		if ind.Signal == "buy" {
 			buys++
 		} else if ind.Signal == "sell" {
@@ -446,7 +493,7 @@ func Analyze(candles []Candle) Result {
 		Composite:      composite,
 		Recommendation: reco,
 		RecoKey:        recoKey,
-		Agreement:      Agreement{Buy: buys, Sell: sells, Neutral: len(inds) - buys - sells, Total: len(inds)},
+		Agreement:      Agreement{Buy: buys, Sell: sells, Neutral: counted - buys - sells, Total: counted},
 		Indicators:     inds,
 	}
 }

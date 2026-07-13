@@ -18,9 +18,10 @@ func TestDumpCandles(t *testing.T) {
 	}
 	c := New("", "") // בלי מפתחות — רק Yahoo, בדיוק כמו בייצור
 	for _, sym := range strings.Split(syms, ",") {
-		cs, meta, err := c.History(sym, WaitUser)
+		cs, meta, err := c.HistoryAll(sym, WaitUser)
 		if err != nil {
-			t.Fatalf("%s: %v", sym, err)
+			t.Logf("%s: אין נתונים (%v) — מדלגים", sym, err) // מניה שנמחקה מהמסחר, למשל
+			continue
 		}
 		b, _ := json.Marshal(cs)
 		if err := os.WriteFile(dir+"/"+sym+"_all.json", b, 0644); err != nil {
