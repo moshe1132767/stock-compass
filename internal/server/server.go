@@ -112,7 +112,7 @@ func seriesTTL(rng string) time.Duration {
 	switch rng {
 	case "1h":
 		return ttl(60*time.Second, 6*time.Hour)
-	case "1w":
+	case "5d":
 		return ttl(10*time.Minute, 6*time.Hour)
 	default: // 1d
 		return ttl(2*time.Minute, 6*time.Hour)
@@ -719,7 +719,7 @@ func (s *Server) warmLoop() {
 				s.fetchDeep(sym) // שגרף "מקס" יהיה מוכן עוד לפני שילחצו עליו
 			}
 
-			for _, rng := range []string{"1h", "1d", "1w"} {
+			for _, rng := range []string{"1h", "1d", "5d"} {
 				s.mu.Lock()
 				c, has := s.series[sym+"|"+rng]
 				s.mu.Unlock()

@@ -275,7 +275,7 @@ var intradaySpec = map[string]struct {
 }{
 	"1h": {"1d", "1m", "1min", 60, 60},
 	"1d": {"1d", "5m", "5min", 78, 0},
-	"1w": {"5d", "15m", "1h", 40, 0},
+	"5d": {"5d", "15m", "1h", 40, 0},
 }
 
 // Intraday — נקודות לגרף תוך-יומי. Yahoo קודם, Twelve Data כגיבוי.
