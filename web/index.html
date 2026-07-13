@@ -384,14 +384,14 @@
   function onType(){
     var q=(document.getElementById('symInput').value||'').trim();
     clearTimeout(state.sgTimer);
-    // כל חיפוש עולה בקשה אצל ספק הנתונים — לכן מחכים שיפסיק להקליד, ומאות אחת אין טעם
-    if(q.length<2){ hideSuggest(); return; }
+    if(!q){ hideSuggest(); return; }
+    // המתנה קצרה רק כדי לא לשלוח בקשה על כל תו באמצע הקלדה — לא כדי לרחם על הספק.
     state.sgTimer=setTimeout(function(){
       apiSearch(q).then(function(items){
         if((document.getElementById('symInput').value||'').trim()!==q) return;
         showSuggest(items||[], q);
       }).catch(hideSuggest);
-    }, 400);
+    }, 140);
   }
 
   // ---------- list ----------
@@ -832,16 +832,14 @@
       render();
     });
   }
+  // כל המניות נטענות במקביל. פעם היה כאן טור עם השהיה בין מניה למניה, כדי לא להציף
+  // ספק עם מכסה צרה — וזה גרם לרשימה להיטען שניות ארוכות. היום השרת מגיש מהזיכרון,
+  // אז אין שום סיבה שמישהו יחכה: הכל יוצא יחד ומגיע יחד.
   function refreshAll(){
     if(state.busy || state.list.length===0){ render(); updateLive(); return Promise.resolve(); }
     state.busy=true; state.marketOpen=false;
-    var i=0;
-    return new Promise(function(done){
-      (function next(){
-        if(i>=state.list.length){ state.busy=false; updateLive(); done(); return; }
-        var sym=state.list[i]; i++;
-        loadOne(sym).then(function(){ setTimeout(next, 260); });
-      })();
+    return Promise.all(state.list.map(loadOne)).then(function(){
+      state.busy=false; updateLive();
     });
   }
   function updateLive(){
