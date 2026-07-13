@@ -84,6 +84,35 @@
     background:var(--neu-wash);color:var(--muted);flex:none;}
   .sg-empty{padding:14px;color:var(--dim);font-size:13.5px;text-align:center;}
 
+  /* דירוג */
+  #rankView{padding:0 16px 26px;}
+  .rk-mkt{border-radius:14px;padding:13px 15px;margin:4px 0 12px;border:1px solid var(--border2);}
+  .rk-mkt.on{background:rgba(0,211,127,.08);border-color:rgba(0,211,127,.35);}
+  .rk-mkt.off{background:rgba(255,90,90,.08);border-color:rgba(255,90,90,.35);}
+  .rk-mkt-t{font-weight:800;font-size:15px;margin-bottom:3px;}
+  .rk-mkt.on .rk-mkt-t{color:var(--up);} .rk-mkt.off .rk-mkt-t{color:var(--down);}
+  .rk-mkt-s{font-size:12.5px;color:var(--dim);line-height:1.55;}
+  .rk-lead{font-size:12.5px;color:var(--dim);line-height:1.6;margin:0 0 12px;}
+  .rk-row{display:flex;align-items:center;gap:10px;padding:11px 12px;border-radius:12px;
+    background:var(--surface);border:1px solid var(--border);margin-bottom:7px;cursor:pointer;}
+  .rk-row.hold{border-color:rgba(0,211,127,.5);background:rgba(0,211,127,.05);}
+  .rk-row:active{transform:scale(.99);}
+  .rk-n{width:24px;text-align:center;font-weight:800;font-size:13px;color:var(--dim);flex:none;}
+  .rk-row.hold .rk-n{color:var(--brand);}
+  .rk-mid{flex:1;min-width:0;}
+  .rk-sym{font-weight:800;font-size:15px;display:flex;align-items:center;gap:6px;}
+  .rk-tag{font-size:9.5px;font-weight:800;background:var(--brand);color:#04120c;
+    padding:2px 5px;border-radius:5px;letter-spacing:.2px;}
+  .rk-name{font-size:11.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;}
+  .rk-mom{font-weight:800;font-size:14.5px;flex:none;min-width:64px;text-align:left;direction:ltr;}
+  .rk-px{flex:none;min-width:74px;text-align:left;direction:ltr;}
+  .rk-px .num{font-weight:700;font-size:13.5px;}
+  .rk-chg{font-size:11px;margin-top:2px;}
+  .rk-bench{font-size:11.5px;color:var(--dim);margin:14px 0 6px;font-weight:700;}
+  .rk-foot{font-size:11.5px;color:var(--dim);line-height:1.65;margin-top:14px;
+    padding-top:12px;border-top:1px solid var(--border);}
+  .rk-load{text-align:center;color:var(--dim);font-size:13px;padding:38px 0;}
+
   /* tabs */
   .tabs{display:flex;gap:6px;padding:8px 16px 4px;}
   .tab{flex:1;background:transparent;border:1px solid var(--border2);color:var(--muted);
@@ -284,11 +313,13 @@
     <button class="tab active" data-tab="all">הכול</button>
     <button class="tab" data-tab="index">מדדים</button>
     <button class="tab" data-tab="stock">מניות</button>
+    <button class="tab" data-tab="rank">דירוג</button>
   </div>
   <div class="live"><span class="dot off" id="liveDot"></span><span id="liveTxt">טוען…</span></div>
   <div class="hint hidden" id="dragHint">לחיצה ארוכה על מניה — וגוררים אותה למעלה או למטה</div>
 
   <div id="errBox"></div>
+  <div id="rankView" class="hidden"></div>
   <div id="cards" class="list"></div>
   <div id="emptyState" class="empty hidden">
     <div class="em"><svg width="28" height="28" viewBox="0 0 100 100"><g fill="#00D37F"><rect x="40" y="15" width="20" height="70" rx="10"/><rect x="26" y="29" width="48" height="20" rx="10"/></g></svg></div>
@@ -316,7 +347,7 @@
   var STARTERS=['AAPL','MSFT','NVDA'];
   var REFRESH_OPEN=30000, REFRESH_CLOSED=300000;
   var state={ list:[], analyses:{}, tab:'all', busy:false, marketOpen:false,
-              lastPrice:{}, detail:null, range:'1d', timer:null, sgTimer:null,
+              lastPrice:{}, detail:null, range:'1d', timer:null, sgTimer:null, rank:null, rkTimer:null, opening:null,
               es:null, streaming:false, bt:null, btRange:'1y' };
 
   var GROUPS=[
@@ -392,6 +423,69 @@
         showSuggest(items||[], q);
       }).catch(hideSuggest);
     }, 140);
+  }
+
+  // ---------- דירוג ----------
+  // האסטרטגיה שנמדדה ועבדה: לדרג את 100 הגדולות לפי מומנטום 12-1, להחזיק את 10 החזקות,
+  // לאזן כל רבעון — ולצאת למזומן כשה-S&P יורד מתחת לממוצע 200 יום.
+  function apiRank(){ return fetch('/api/rank').then(function(r){ return r.json(); }); }
+
+  function loadRank(){
+    var box=document.getElementById('rankView');
+    if(!state.rank) box.innerHTML='<div class="rk-load">מכין את הדירוג…</div>';
+    apiRank().then(function(d){
+      if(state.tab!=='rank') return;
+      clearTimeout(state.rkTimer);
+      if(!d.ready){
+        box.innerHTML='<div class="rk-load">מכין את הדירוג — '+lt(d.done)+' מתוך '+lt(d.total)+' מניות</div>';
+        state.rkTimer=setTimeout(loadRank, 1500);
+        return;
+      }
+      state.rank=d; renderRank(d);
+      state.rkTimer=setTimeout(loadRank, 30000);   // המחירים חיים; הדירוג עצמו משתנה פעם ביום
+    }).catch(function(){
+      box.innerHTML='<div class="rk-load">לא הצלחתי לטעון את הדירוג. נסה שוב בעוד רגע.</div>';
+    });
+  }
+
+  function renderRank(d){
+    var on=d.marketOn;
+    var h='<div class="rk-mkt '+(on?'on':'off')+'">'+
+      '<div class="rk-mkt-t">'+(on?'השוק בפנים':'השוק בחוץ — מזומן')+'</div>'+
+      '<div class="rk-mkt-s">'+(on
+        ? 'ה-S&P 500 נסחר מעל הממוצע של 200 יום ('+lt(Math.round(d.spy))+' מול '+lt(Math.round(d.spyMA))+'), ולכן האסטרטגיה מושקעת.'
+        : 'ה-S&P 500 מתחת לממוצע של 200 יום ('+lt(Math.round(d.spy))+' מול '+lt(Math.round(d.spyMA))+'). המתג הזה לא מוסיף תשואה — הוא מקטין את הנפילות.')+
+      '</div></div>'+
+      '<div class="rk-lead"><b>'+lt(d.holdN)+' המניות החזקות ביותר</b> מתוך 100 הגדולות בארה"ב, לפי מומנטום '+lt('12-1')+'. '+
+      'מאזנים פעם ברבעון — האיזון הבא: '+esc(d.nextRebal)+'.</div><div>';
+
+    var benched=false;
+    d.items.forEach(function(i){
+      if(!i.hold && !benched){
+        benched=true;
+        h+='</div><div class="rk-bench">על הספסל — הבאות בתור</div><div>';
+      }
+      h+='<div class="rk-row'+(i.hold?' hold':'')+'" data-rk="'+esc(i.symbol)+'">'+
+        '<div class="rk-n">'+i.rank+'</div>'+
+        '<div class="rk-mid">'+
+          '<div class="rk-sym">'+esc(i.symbol)+(i.hold?'<span class="rk-tag">מחזיקים</span>':'')+'</div>'+
+          '<div class="rk-name">'+esc(i.name)+'</div>'+
+        '</div>'+
+        '<div class="rk-mom num" style="color:'+upDown(i.mom)+'">'+pctTxt(i.mom)+'</div>'+
+        '<div class="rk-px"><div class="num">$'+i.price.toFixed(2)+'</div>'+
+          '<div class="num rk-chg" style="color:'+upDown(i.changePct)+'">'+pctTxt(i.changePct)+'</div></div>'+
+      '</div>';
+    });
+    h+='</div><div class="rk-foot">האחוז הגדול הוא <b>מומנטום '+lt('12-1')+'</b>: התשואה מלפני שנה ועד לפני חודש. '+
+      'החודש האחרון מדולג בכוונה — הוא נוטה להיפוך ומוסיף רעש. '+
+      'במדידה שלנו הדירוג היכה את הרף בשני חלונות זמן נפרדים, אבל שום אסטרטגיה לא מנצחת כל שנה, '+
+      'ותקופות פיגור של שנים הן חלק ממנה.</div>';
+
+    var box=document.getElementById('rankView');
+    box.innerHTML=h;
+    Array.prototype.forEach.call(box.querySelectorAll('[data-rk]'), function(r){
+      r.addEventListener('click', function(){ openDetail(r.getAttribute('data-rk')); });
+    });
   }
 
   // ---------- list ----------
@@ -784,7 +878,17 @@
   }
   function openDetail(sym, fromPop){
     var a=state.analyses[sym];
-    if(!a||!a.ok) return;
+    // מניה שלא ברשימה שלך (למשל מתוך הדירוג) — מביאים את הניתוח ואז פותחים.
+    if(!a||!a.ok){
+      if(state.opening===sym) return;
+      state.opening=sym;
+      loadOne(sym).then(function(){
+        state.opening=null;
+        var b=state.analyses[sym];
+        if(b&&b.ok) openDetail(sym, fromPop);
+      });
+      return;
+    }
     state.detail=sym;
     if(!fromPop) history.pushState({d:sym}, '', '#'+sym);
     var col=band(a.score100);
@@ -987,7 +1091,18 @@
   Array.prototype.forEach.call(document.querySelectorAll('.tab'), function(t){
     t.addEventListener('click', function(){
       Array.prototype.forEach.call(document.querySelectorAll('.tab'), function(x){ x.classList.remove('active'); });
-      t.classList.add('active'); state.tab=t.getAttribute('data-tab'); render();
+      t.classList.add('active'); state.tab=t.getAttribute('data-tab');
+      var rankOn = state.tab==='rank';
+      document.getElementById('rankView').classList.toggle('hidden', !rankOn);
+      document.getElementById('cards').classList.toggle('hidden', rankOn);
+      if(rankOn){
+        document.getElementById('emptyState').classList.add('hidden');
+        document.getElementById('dragHint').classList.add('hidden');
+        loadRank();
+      } else {
+        clearTimeout(state.rkTimer);
+        render();
+      }
     });
   });
   Array.prototype.forEach.call(document.querySelectorAll('[data-add]'), function(c){

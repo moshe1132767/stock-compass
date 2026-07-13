@@ -493,6 +493,54 @@ func (c *Client) FinnhubQuote(symbol string) (FHQuote, error) {
 	return fq, nil
 }
 
+// BQuote — מחיר בחבילה (לדירוג של יקום שלם).
+type BQuote struct {
+	Price     float64
+	ChangePct float64
+}
+
+// BatchQuotes — מחירים חיים לעשרות מניות בבקשה אחת. זה מה שמאפשר להציג יקום שלם
+// בזמן אמת בלי לשרוף מכסה: 100 מניות = שתי בקשות, במקום 100.
+func (c *Client) BatchQuotes(syms []string) map[string]BQuote {
+	out := make(map[string]BQuote, len(syms))
+	const chunk = 50
+	for i := 0; i < len(syms); i += chunk {
+		end := i + chunk
+		if end > len(syms) {
+			end = len(syms)
+		}
+		u := "https://query2.finance.yahoo.com/v7/finance/quote?symbols=" +
+			url.QueryEscape(strings.Join(syms[i:end], ","))
+		if cr := c.y.crumbNow(); cr != "" {
+			u += "&crumb=" + url.QueryEscape(cr)
+		}
+		resp, err := c.y.do(u)
+		if err != nil {
+			continue // נסתפק במה שיש; המחירים יתעדכנו בסבב הבא
+		}
+		var r struct {
+			QuoteResponse struct {
+				Result []struct {
+					Symbol                     string  `json:"symbol"`
+					RegularMarketPrice         float64 `json:"regularMarketPrice"`
+					RegularMarketChangePercent float64 `json:"regularMarketChangePercent"`
+				} `json:"result"`
+			} `json:"quoteResponse"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&r)
+		resp.Body.Close()
+		if err != nil {
+			continue
+		}
+		for _, q := range r.QuoteResponse.Result {
+			if q.RegularMarketPrice > 0 {
+				out[q.Symbol] = BQuote{Price: q.RegularMarketPrice, ChangePct: q.RegularMarketChangePercent}
+			}
+		}
+	}
+	return out
+}
+
 // CompanyName — שם החברה. Finnhub קודם; ואם אין לו פרופיל (קרנות/מדדים) — Twelve Data, פעם אחת.
 // ברוב המקרים לא נגיע לכאן בכלל: Yahoo כבר החזיר את השם יחד עם ההיסטוריה.
 func (c *Client) CompanyName(symbol string) (string, error) {

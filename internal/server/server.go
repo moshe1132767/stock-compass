@@ -30,15 +30,17 @@ type Server struct {
 	feed *livefeed.Feed
 
 	mu       sync.Mutex
-	hist     map[string]cachedHistory // היסטוריה יומית מלאה לכל סימול
-	deep     map[string]cachedHistory // היסטוריה עמוקה (רק במסלול הגיבוי של Twelve Data)
-	bt       map[string]cachedBT      // סימולציית עבר
-	quotes   map[string]cachedQuote   // ציטוט Finnhub
-	names    map[string]string        // שם חברה — לא משתנה, נשמר לתמיד
-	series   map[string]cachedSeries  // סדרות גרף תוך-יומיות
-	search   map[string]cachedSearch  // תוצאות חיפוש
-	seen     map[string]time.Time     // סימולים שהמשתמש נגע בהם — אותם מחזיקים חמים
-	inflight map[string]*flight       // בקשה אחת בכל רגע לכל מפתח
+	hist     map[string]cachedHistory     // היסטוריה יומית מלאה לכל סימול
+	deep     map[string]cachedHistory     // היסטוריה עמוקה (רק במסלול הגיבוי של Twelve Data)
+	bt       map[string]cachedBT          // סימולציית עבר
+	quotes   map[string]cachedQuote       // ציטוט Finnhub
+	names    map[string]string            // שם חברה — לא משתנה, נשמר לתמיד
+	series   map[string]cachedSeries      // סדרות גרף תוך-יומיות
+	search   map[string]cachedSearch      // תוצאות חיפוש
+	seen     map[string]time.Time         // סימולים שהמשתמש נגע בהם — אותם מחזיקים חמים
+	inflight map[string]*flight           // בקשה אחת בכל רגע לכל מפתח
+	uq       map[string]marketdata.BQuote // מחירי היקום המדורג (חבילה אחת לכולם)
+	uqAt     time.Time
 
 	cmu     sync.Mutex
 	clients map[*sseClient]bool
@@ -136,12 +138,14 @@ func New(cfg config.Config) *Server {
 		search:   make(map[string]cachedSearch),
 		seen:     make(map[string]time.Time),
 		inflight: make(map[string]*flight),
+		uq:       make(map[string]marketdata.BQuote),
 		clients:  make(map[*sseClient]bool),
 	}
 	s.routes()
 	s.feed.Start()
 	go s.broadcastLoop()
 	go s.warmLoop()
+	go s.rankLoop()
 	return s
 }
 
@@ -151,6 +155,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/search", s.handleSearch)
 	s.mux.HandleFunc("/api/series", s.handleSeries)
 	s.mux.HandleFunc("/api/backtest", s.handleBacktest)
+	s.mux.HandleFunc("/api/rank", s.handleRank)
 	s.mux.HandleFunc("/api/stream", s.handleStream)
 	s.mux.Handle("/", http.FileServer(http.Dir(s.cfg.WebDir)))
 }
